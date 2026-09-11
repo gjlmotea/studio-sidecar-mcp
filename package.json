@@ -1,0 +1,39 @@
+{
+  "name": "@vibe/roblox-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Roblox Studio companion MCP：補內建 Studio MCP 結構上做不到的那一層 —— 開啟指定 place、StudioMCP 行程治理、Open Cloud 資產上傳與就地更新。不重做內建版已有的工具面。",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": "22.23.1"
+  },
+  "packageManager": "pnpm@11.17.0",
+  "main": "./dist/index.js",
+  "bin": {
+    "roblox-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.build.json",
+    "smoke": "node scripts/stdio-smoke.mjs",
+    "verify": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run smoke",
+    "verify:live": "node scripts/verify-live.mjs",
+    "verify:extract": "node scripts/verify-extract-live.mjs",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}
