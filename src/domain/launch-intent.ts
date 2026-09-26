@@ -34,7 +34,7 @@ const DIGITS = /^[0-9]+$/;
  * 產生 `-launchIntentString` 的值。
  *
  * id 一律當字串處理並嚴格檢查為十進位數字：placeId 會超過 2^53
- * （sample-game 是 100000000000123，還在範圍內，但沒有理由賭下一個），
+ * （目前的 placeId 約在 10¹⁴ 量級，還在範圍內，但沒有理由賭下一個），
  * 而且這個值會被塞進命令列，不能讓非數字內容流進去。
  */
 export function buildLaunchIntent(request: LaunchIntentRequest): string {

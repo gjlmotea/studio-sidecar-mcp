@@ -23,7 +23,7 @@ export interface StudioBridge {
    * 收線。
    *
    * 🔴 **一定要呼叫。** 正常 close 會連帶收掉 `StudioMCP.exe` 子行程；不收就是在
-   * 製造 stub 洩漏（成因見 vibe/roblox/README.md 的〈stub 為什麼會增生〉）。
+   * 製造 stub 洩漏（成因見 README 的〈broker 不能殺，而且它的身分會遷移〉）。
    */
   close(): Promise<void>;
 }

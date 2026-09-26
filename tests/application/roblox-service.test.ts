@@ -63,13 +63,13 @@ class FakeStudioHost implements StudioHost {
 
 function record(overrides: Partial<AssetRecord> = {}): AssetRecord {
   return {
-    assetId: '139070083633857',
+    assetId: '100000000000001',
     displayName: 'ProbeCube',
     description: '',
     assetType: 'Model',
     revisionId: '1',
     revisionCreateTime: iso(0),
-    creatorUserId: '1000000123',
+    creatorUserId: '1000000001',
     moderationState: 'Approved',
     state: 'Active',
     ...overrides,
@@ -131,7 +131,7 @@ async function makeService(uploadRoots: readonly string[]): Promise<RobloxServic
     openCloud,
     version: '0.1.0',
     allowedUploadRoots: uploadRoots,
-    defaultCreatorUserId: '1000000123',
+    defaultCreatorUserId: '1000000001',
     sleep: async (ms: number) => {
       clock += ms;
     },
@@ -151,10 +151,10 @@ beforeEach(async () => {
 describe('openPlace', () => {
   it('把啟動意圖以陣列交給 host，不自己拼命令列', async () => {
     const service = await makeService([]);
-    await service.openPlace({ placeId: '100000000000123', universeId: '10000000123' });
+    await service.openPlace({ placeId: '100000000000002', universeId: '10000000003' });
     expect(studio.launched[0]).toEqual([
       '-launchIntentString',
-      '{"task":"EditPlace","universeid":"10000000123","placeid":"100000000000123"}',
+      '{"task":"EditPlace","universeid":"10000000003","placeid":"100000000000002"}',
     ]);
   });
 
@@ -277,7 +277,7 @@ describe('uploadAsset', () => {
   it('路徑合法時才送出去', async () => {
     const service = await makeService([workDir]);
     const asset = await service.uploadAsset({ filePath: fbxPath, displayName: 'ProbeCube' });
-    expect(asset.assetId).toBe('139070083633857');
+    expect(asset.assetId).toBe('100000000000001');
     expect(openCloud.calls).toContain('create');
   });
 });
@@ -287,7 +287,7 @@ describe('updateAsset', () => {
     openCloud.current = record({ revisionId: '1' });
     openCloud.next = record({ revisionId: '2' });
     const service = await makeService([workDir]);
-    const { outcome } = await service.updateAsset({ assetId: '139070083633857', filePath: fbxPath });
+    const { outcome } = await service.updateAsset({ assetId: '100000000000001', filePath: fbxPath });
     expect(outcome.verdict).toBe('updated');
   });
 
@@ -295,13 +295,13 @@ describe('updateAsset', () => {
     openCloud.current = record({ revisionId: '1' });
     openCloud.next = record({ revisionId: '1' });
     const service = await makeService([workDir]);
-    const { outcome } = await service.updateAsset({ assetId: '139070083633857', filePath: fbxPath });
+    const { outcome } = await service.updateAsset({ assetId: '100000000000001', filePath: fbxPath });
     expect(outcome.verdict).toBe('deduplicated');
   });
 
   it('更新前先讀一次，才有前值可以比對', async () => {
     const service = await makeService([workDir]);
-    await service.updateAsset({ assetId: '139070083633857', filePath: fbxPath });
+    await service.updateAsset({ assetId: '100000000000001', filePath: fbxPath });
     expect(openCloud.calls).toEqual(['get', 'updateContent']);
   });
 });
@@ -310,21 +310,21 @@ describe('archiveAsset', () => {
   it('Model 先擋下來，不送出必定失敗的請求', async () => {
     openCloud.current = record({ assetType: 'Model' });
     const service = await makeService([]);
-    await expect(service.archiveAsset('139070083633857')).rejects.toThrow(/不是可封存的型別/);
+    await expect(service.archiveAsset('100000000000001')).rejects.toThrow(/不是可封存的型別/);
     expect(openCloud.calls).not.toContain('archive');
   });
 
   it('可封存的型別照常送出', async () => {
     openCloud.current = record({ assetType: 'Audio' });
     const service = await makeService([]);
-    const asset = await service.archiveAsset('139070083633857');
+    const asset = await service.archiveAsset('100000000000001');
     expect(asset.state).toBe('Archived');
   });
 
   it('還原不需要先檢查型別', async () => {
     openCloud.current = record({ assetType: 'Model' });
     const service = await makeService([]);
-    const asset = await service.archiveAsset('139070083633857', true);
+    const asset = await service.archiveAsset('100000000000001', true);
     expect(asset.state).toBe('Active');
   });
 });

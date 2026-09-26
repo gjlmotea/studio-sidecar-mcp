@@ -130,7 +130,7 @@ export class RobloxService {
    *
    * 🔴 這是所有寫入與抽取的前置。`multi_edit` 之類的工具是用路徑寫入的，
    * 傳錯 `studio_id` 會**直接覆蓋另一個遊戲的原始碼且沒有復原鍵**，而且不會有任何警告。
-   * 另外 `game.Name` 不可信（sample-game 開起來回的是 `Place1`），只有 placeId 分得出來。
+   * 另外 `game.Name` 不可信（實測有已發佈的 place 開起來回的是 `Place1`），只有 placeId 分得出來。
    */
   async #findStudioByPlaceId(
     bridge: StudioBridge,

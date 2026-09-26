@@ -13,7 +13,7 @@ import { SENTINEL } from './extraction.js';
 /** 存放抽取結果的 Lua 全域。用完要清掉。 */
 const BUFFER = 'shared.RBXEXTRACT';
 
-/** 走訪這些 service 底下的腳本。與 vibe/roblox 快照的目錄約定一致。 */
+/** 走訪這些 service 底下的腳本。與抽出後 `src/<Service>/…` 的目錄約定一致。 */
 const SCRIPT_SERVICES = [
   'Workspace',
   'ReplicatedStorage',

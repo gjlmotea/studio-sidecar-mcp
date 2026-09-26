@@ -1,6 +1,6 @@
 // 直連 StudioMCP 時，execute_luau 的回傳上限到底是多少？
 //
-// vibe/roblox 的紀錄是「MCP 回傳硬上限 100,000 字元，超過靜默截斷」。但那是**透過
+// 先前的紀錄是「MCP 回傳硬上限 100,000 字元，超過靜默截斷」。但那是**透過
 // Claude Code harness**觀察到的。本 server 是直連 client，限制可能不同 —— 這決定
 // extract_place 要不要那整套分塊／哨兵機械，所以先量清楚。
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';

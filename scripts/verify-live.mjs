@@ -13,14 +13,19 @@ import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotoc
  * 的實測結果記在 README「端到端驗證」，重跑要人為判斷代價後手動執行。
  *
  * 用法：node scripts/verify-live.mjs [assetId]
+ *
+ * 金鑰取 ROBLOX_API_KEY，沒設定時再試作者工作區的 roblox/.env.shared；兩者都沒有、
+ * 或沒給 assetId，就跳過 Open Cloud 那段。ROBLOX_CREATOR_USER_ID 有設才帶進去。
  */
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 const envPath = new URL('../../../roblox/.env.shared', import.meta.url);
-const assetId = process.argv[2] ?? '139070083633857';
+const assetId = process.argv[2];
 
-/** 從 vibe/roblox/.env.shared 取金鑰；沒有就跳過 Open Cloud 那段。 */
+/** 先看環境變數，再看作者工作區的 roblox/.env.shared；都沒有就跳過 Open Cloud 那段。 */
 async function readApiKey() {
+  const fromEnv = process.env.ROBLOX_API_KEY?.trim();
+  if (fromEnv) return fromEnv;
   try {
     const raw = await readFile(envPath, 'utf8');
     const line = raw.split(/\r?\n/).find((row) => row.startsWith('ROBLOX_API_KEY='));
@@ -40,7 +45,9 @@ const transport = new StdioClientTransport({
   env: {
     ...getDefaultEnvironment(),
     ...(apiKey === undefined ? {} : { ROBLOX_API_KEY: apiKey }),
-    ROBLOX_CREATOR_USER_ID: '1000000123',
+    ...(process.env.ROBLOX_CREATOR_USER_ID
+      ? { ROBLOX_CREATOR_USER_ID: process.env.ROBLOX_CREATOR_USER_ID }
+      : {}),
   },
 });
 
@@ -92,7 +99,7 @@ try {
       assert.ok(!p.planned.some((row) => row.pid === p.brokerPid), 'broker 被列入清除名單'));
   }
 
-  if (apiKey !== undefined) {
+  if (apiKey !== undefined && assetId !== undefined) {
     console.log('\nOpen Cloud（唯讀）');
     const asset = await client.callTool({ name: 'roblox_get_asset', arguments: { assetId } });
     if (asset.isError) {
@@ -106,7 +113,7 @@ try {
       check('回報 revisionId（更新判定的唯一依據）', () => assert.ok(a.revisionId, '沒有 revisionId'));
     }
   } else {
-    console.log('\nOpen Cloud：跳過（讀不到 vibe/roblox/.env.shared 的金鑰）');
+    console.log(`\nOpen Cloud：跳過（${apiKey === undefined ? '沒有 ROBLOX_API_KEY' : '沒指定 assetId'}）`);
   }
 
   console.log(failures === 0 ? '\n真機驗證通過。' : `\n真機驗證有 ${failures} 項未通過。`);

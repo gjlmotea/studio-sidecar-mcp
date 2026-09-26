@@ -52,64 +52,69 @@ MCP 沒有任何規定禁止一個行程同時是 server 與 client。本 server
 ```
 
 **最後一行是這條路能不能用的關鍵**：只要 client 正常 `close()`，子行程會跟著收掉，
-不會製造新的 stub 洩漏（stub 為什麼還是會累積、以及怎麼修，見
-[`vibe/roblox/README.md`](../../roblox/README.md) 的〈stub 為什麼會增生〉）。
-
-在這批工具落地之前，這些能力仍走內建版 + 人工紀律
-（見 [`vibe/roblox/README.md`](../../roblox/README.md)）。
+不會製造新的 stub 洩漏（stub 為什麼還是會累積、以及怎麼清，見下方
+〈broker 不能殺，而且它的身分會遷移〉）。
 
 ## 設定
 
-用 `claude mcp add -s local` 註冊，在這個 repo 的根目錄執行：
+需要 Node.js 22 與 pnpm。先在本 repo 根目錄安裝並建置：
+
+```bash
+pnpm install
+pnpm run build
+```
+
+再用 `claude mcp add -s local` 註冊（同樣在本 repo 根目錄執行）：
 
 ```bash
 claude mcp add -s local roblox-companion \
-  -e ROBLOX_CREATOR_USER_ID="1000000123" \
-  -e ROBLOX_UPLOAD_ROOT="$PWD/gjlmotea/vibe/roblox/models" \
-  -- "$(which node)" "$PWD/gjlmotea/vibe/mcp/roblox/scripts/mcp-launch.mjs"
+  -e ROBLOX_API_KEY="<你的 Open Cloud 金鑰>" \
+  -e ROBLOX_CREATOR_USER_ID="<你的 Roblox user ID>" \
+  -e ROBLOX_UPLOAD_ROOT="<允許上傳的資料夾>" \
+  -- "$(which node)" "$PWD/scripts/mcp-launch.mjs"
 ```
 
-順手把 Studio 內建的那台也接上（`tools/studio-mcp.mjs` 是跨平台啟動器，見
-[`vibe/roblox/README.md`](../../roblox/README.md) 的〈啟動路徑不能寫死〉）：
+三個環境變數都可以省略：沒有金鑰時四個 Open Cloud 工具會拒絕，沒有 `ROBLOX_UPLOAD_ROOT`
+時所有上傳一律拒絕，其餘工具照常可用。
+
+Studio 內建的 MCP 要另外註冊 —— 腳本讀寫、截圖、playtest 都在那邊（本 server 的 Luau
+相關工具也是在背後借用同一支 `StudioMCP`）。先在 Studio 的 **Assistant Settings** 打開
+MCP server，再把執行檔註冊進來：
 
 ```bash
-claude mcp add -s local roblox-studio \
-  -- "$(which node)" "$PWD/gjlmotea/vibe/roblox/tools/studio-mcp.mjs"
+# macOS
+claude mcp add -s local roblox-studio -- /Applications/RobloxStudio.app/Contents/MacOS/StudioMCP
 ```
 
-入口是 `scripts/mcp-launch.mjs` 而不是 `dist/index.js`，因為 **`ROBLOX_API_KEY`
-不能寫進任何被追蹤的設定檔**：根 AGENTS.md SEC-001 的明文核准只列名
-`gjlmotea/vibe/roblox/.env.shared` 一條路徑，「授權只限列名路徑與用途，不得類推到其他
-secret」。launcher 在載入 server 前把該檔的金鑰讀進 `process.env`，讓那把金鑰維持唯一
-來源（外部已設好時以外部為準；讀不到就照常啟動，只有四個 Open Cloud 工具會拒絕）。
+Windows 的 `StudioMCP.exe` 住在 `%LOCALAPPDATA%\Roblox\Versions\version-<hash>\`，
+**Studio 每次更新都會換目錄**，寫死路徑下次更新就會壞 —— 請用一個在啟動當下才解析路徑的小啟動器。
+
+入口是 `scripts/mcp-launch.mjs` 而不是 `dist/index.js`：它在載入 server 前把金鑰讀進
+`process.env`（外部已設好時以外部為準；讀不到就照常啟動，只有四個 Open Cloud 工具會拒絕）。
+**金鑰不要寫進任何會被版本控制追蹤的設定檔。**
 
 註冊後要**重開 session** 才會生效。接上之後先呼叫 `roblox_get_status` 確認
 `openCloudConfigured` 與 `allowedUploadRoots` 是預期的值。
 
-### 🔴 為什麼不寫進 repo 根的 `.mcp.json`
+### 🔴 為什麼用 `claude mcp add -s local` 而不是 `.mcp.json`
 
-2026-08-30 移除了根目錄的 `.mcp.json`（原本登記著 `minecraft-edu` 與
-`roblox-companion`）。**它從來沒有生效過**，而且它的存在會讓人以為那是真實來源 ——
 兩個獨立的原因疊在一起：
 
-1. **手寫的變數與裸指令都是壞的。** `${CLAUDE_PROJECT_DIR}` 目前的 Claude Code 不會展開，
+1. **手寫的變數與裸指令容易是壞的。** `${CLAUDE_PROJECT_DIR}` 目前的 Claude Code 不會展開，
    `claude mcp list` 會報 `Missing environment variables: CLAUDE_PROJECT_DIR`；裸 `node`
-   在有 nvm／conda shell 函式的環境會靜默解析到錯的版本（本機實測是 v14.15.1）。這兩條
-   都是 bambu 先踩到並實測過的，見 [`mcp/bambu/README.md`](../bambu/README.md)。
+   在有 nvm／conda shell 函式的環境可能靜默解析到錯的版本，所以上面用 `$(which node)`
+   落成絕對路徑。
 2. **project scope 要互動核准。** `.mcp.json` 會跟著 git 走、可能是別人塞的，所以 Claude
-   Code 一定要使用者按過同意才載入（核准紀錄在 `~/.claude.json` 的
-   `enabledMcpjsonServers`，本機實測是空的）。而那個提示**在非互動 session 永遠不會跳
-   出來**。
+   Code 一定要使用者按過同意才載入，而那個提示**在非互動 session 永遠不會跳出來**。
 
-修好第一點不會解決第二點。ENV-001「不寫死使用者絕對路徑」的原意是可攜性，但一份起不來
-的設定沒有可攜性可言 —— 上面那幾行指令本身可攜，落地的設定則是這台機器上正確的絕對路徑。
+修好第一點不會解決第二點。上面那幾行指令本身可攜，落地的設定則是這台機器上正確的絕對路徑。
 
 驗連線一律用 `claude mcp list`，它會直接跑健康檢查，並且會報出同名 server 跨 scope 定義
 不一致的衝突。
 
 | 環境變數 | 用途 |
 |---|---|
-| `ROBLOX_API_KEY` | Open Cloud 金鑰，需要 Asset **read + write**。跨機器共用的那把在 `vibe/roblox/.env.shared` |
+| `ROBLOX_API_KEY` | Open Cloud 金鑰，需要 Asset **read + write**（Creator Dashboard → Open Cloud API Keys） |
 | `ROBLOX_CREATOR_USER_ID` | 上傳時填進 `creationContext` 的建立者 |
 | `ROBLOX_UPLOAD_ROOT` | **允許上傳的來源目錄**（可多個，PATH 分隔符分隔）。**未設定時所有上傳一律拒絕** |
 | `ROBLOX_STUDIO_PATH` | Studio 執行檔。省略時自動解析目前安裝版 |
@@ -169,8 +174,7 @@ operation `done: true`、**沒有任何錯誤欄位**，但 `revisionId` 不動 
 
 ⚠️ 反過來也要小心：**`revisionId` 遞增也不保證 Studio 端拿得到新內容**。
 同日另一次實測，對一個源自 Tinkercad GLTF 匯入的舊資產 PATCH，`revisionId` 有進到 2 但
-`insert_asset` 仍是舊網格。差異疑似在資產來源格式，尚未分出勝負 ——
-競爭假設與判別步驟在 [`vibe/roblox/models/README.md`](../../roblox/models/README.md)。
+`insert_asset` 仍是舊網格。差異疑似在資產來源格式，尚未分出勝負。
 本 server 只能保證「Open Cloud 那一端接受了新版本」，**保證不到 Studio 端的快取行為**。
 
 另外：換內容**不要**帶 `updateMask`（`updateMask=fileContent` 會回
@@ -248,16 +252,19 @@ Model 與 Decal **從未支援封存**，`roblox_archive_asset` 會先擋下來�
 
 ```bash
 pnpm install
-pnpm run verify          # typecheck + 122 tests + build + stdio smoke
+pnpm run verify          # typecheck + 123 tests + build + stdio smoke
 pnpm run verify:live     # 對真機與真帳號跑唯讀驗證
 pnpm run verify:extract  # 真機端到端：open_place → place_guard → luau_safe → extract_place
 ```
 
 `verify:live` 刻意**只做唯讀操作**，不上傳、不更新、不開 place、不終止行程。
+Open Cloud 那段需要 `ROBLOX_API_KEY` 和一個 assetId（`node scripts/verify-live.mjs <assetId>`），
+缺一就跳過。
 
-`verify:extract` 會開一個 Studio 實例，並把抽出來的腳本**逐位元組**比對
-`vibe/roblox/sample-game/src` 那份人工快照 —— 那份是先前手工分塊、逐檔校驗做出來的，
-拿它當基準才驗得出這套自動化有沒有漏東西。
+`verify:extract` 需要三個環境變數：`ROBLOX_VERIFY_PLACE_ID`、`ROBLOX_VERIFY_UNIVERSE_ID`
+（目標 place，必須是你自己的）與 `ROBLOX_VERIFY_BASELINE`（一份人工抽出的腳本快照）。
+它會開一個 Studio 實例，並把抽出來的腳本**逐位元組**比對那份快照 —— 快照要先手工分塊、
+逐檔校驗做出來，拿它當基準才驗得出這套自動化有沒有漏東西。
 
 ### 端到端驗證（2026-08-30，真機）
 
@@ -265,14 +272,14 @@ pnpm run verify:extract  # 真機端到端：open_place → place_guard → luau
 
 | 路徑 | 結果 |
 |---|---|
-| `open_place` sample-game | 開起來、約 5 秒註冊到 broker，內建 MCP 的 `list_roblox_studios` 出現 `sample-game (placeId: 100000000000123)`；用該 `studio_id` 跑 `execute_luau` 驗到 `placeId` 相符、2075 個 workspace 後代 |
-| `upload_asset` | 自製 1754-byte 立方體 fbx → assetId `139070083633857`、`moderationState: Approved`、`revisionId 1`；`insert_asset` 進 Studio 量到 100×100×100 studs（FBX 用公分，1 cm = 1 stud） |
-| **上傳的 Model 天生是 Package** | 插進 Studio 後底下有 `PackageLink`、`PackageId = rbxassetid://139070083633857` |
+| `open_place`（作者的一個已發佈 place） | 開起來、約 5 秒註冊到 broker，內建 MCP 的 `list_roblox_studios` 出現 `<名稱> (placeId: <placeId>)`；用該 `studio_id` 跑 `execute_luau` 驗到 `placeId` 相符、2075 個 workspace 後代 |
+| `upload_asset` | 自製 1754-byte 立方體 fbx → 新的 assetId、`moderationState: Approved`、`revisionId 1`；`insert_asset` 進 Studio 量到 100×100×100 studs（FBX 用公分，1 cm = 1 stud） |
+| **上傳的 Model 天生是 Package** | 插進 Studio 後底下有 `PackageLink`、`PackageId = rbxassetid://<assetId>` |
 | `update_asset`（內容不同） | 換成 3 倍大的幾何 → `revisionId 1 → 2`，重新 insert 量到 300×300×300，更新確實傳到 Studio（同一 session、立刻重插、未重啟未清快取） |
 | `update_asset`（內容相同） | `HTTP 200`、`done: true`、無錯誤，但 `revisionId` 不動 → `verdict: deduplicated` |
 | `cleanup_stubs` | 20 → 6 隻，broker 保留，Studio 與既有連線未受影響 |
-| **`extract_place` sample-game** | 11 份腳本、295,230 位元組、分 5 塊、**1 秒**；與 `vibe/roblox/sample-game/src` 的人工快照**逐位元組一致（11/11）**。295 KB 遠超 100 K 上限，分塊機制確實被走過 |
-| `place_guard` | 認出 `sample-game (placeId: 100000000000123)` 並回傳 `studio_id`；假的 placeId 確實失敗 |
+| **`extract_place`**（同一個 place） | 11 份腳本、295,230 位元組、分 5 塊、**1 秒**；與事先人工抽取的快照**逐位元組一致（11/11）**。295 KB 遠超 100 K 上限，分塊機制確實被走過 |
+| `place_guard` | 認出目標 place 並回傳 `studio_id`；假的 placeId 確實失敗 |
 | `luau_safe`（唯讀查詢） | `parts=2075` |
 | `luau_safe`（受保護屬性） | 不再讓整段中止，變成可讀的 `ok=false`＋`The current thread cannot read 'Technology' (lacking capability RobloxScript)` |
 | `luau_safe`（150,000 字元） | 完整取回、分 3 塊 —— 同一段內容直接走內建版 `execute_luau` 會停在 100,000 |
@@ -285,7 +292,7 @@ pnpm run verify:extract  # 真機端到端：open_place → place_guard → luau
 | | Windows | macOS |
 |---|:---:|:---:|
 | 開啟指定 place | ✅ 實測 | ✅ 已實作，**未真機驗證** |
-| 行程／broker 查詢 | ✅ 實測（PowerShell） | ✅ 已實作，**未真機驗證**（`ps` + `lsof`） |
+| 行程／broker 查詢 | ✅ 實測（PowerShell） | ✅ 2026-09-26 實測（`ps` + `lsof`） |
 | stub 清理 | ✅ 實測 | ✅ 已實作，**未真機驗證** |
 | 視窗標題 | ✅ | ❌ 一律 undefined，見下 |
 | Open Cloud 全部工具 | ✅ | ✅（純 HTTP，與平台無關） |
@@ -297,7 +304,7 @@ pnpm run verify:extract  # 真機端到端：open_place → place_guard → luau
 該平台一律回 `undefined`。這只影響 `roblox_open_place` 失敗時的線索豐富度，
 判斷邏輯本身靠的是 broker 連線而不是標題。
 
-⚠️ **開發機是 Windows，macOS 路徑沒有在真機上跑過。** 上表誠實標記，不要當成已驗證。
+⚠️ **原開發機是 Windows。** macOS 目前只有行程／broker 查詢在真機上跑過，上表標示未驗證的項目不要當成已驗證。
 
 Linux 一律明確拒絕而不是回空快照 —— Roblox Studio 根本不存在於該平台，
 回空會讓呼叫端誤以為「沒有 Studio 在跑」。
@@ -305,13 +312,15 @@ Linux 一律明確拒絕而不是回空快照 —— Roblox Studio 根本不存�
 ## 邊界
 
 - **不碰視窗焦點。** 搶焦點會讓游離按鍵關掉剛載好的 place（實測）。
-- **`roblox_luau_safe` 不是新的任意執行入口。** 群組
-  [架構原則 4](../README.md)（「拒絕任意執行入口」）仍然成立 ——
+- **`roblox_luau_safe` 不是新的任意執行入口。**「拒絕任意執行入口」這條原則仍然成立 ——
   `execute_luau` 本來就在客戶端手上，本工具沒有擴大任何權限，只是在同一個入口前面
   加了三道護欄（強制 placeId 守衛、整段 pcall、結果分塊）。
   **它不是沙箱**：能做的事跟直接用內建版一樣多，差別只在不會靜默出錯。
 - **不逆向 broker 在 13469 的未公開協定。** 這條仍然成立，而且現在有更好的理由：
   既然可以正大光明當 `StudioMCP.exe` 的 MCP client，就沒有必要去逆向它的內部通訊。
 - 不提供「從物品欄刪除」：那走 `inventory.roblox.com` 且需要登入 session cookie 與
-  CSRF token，不是 Open Cloud API Key 能做的事。相關工具在
-  [`vibe/roblox/tools/purge-inventory-models.js`](../../roblox/tools/purge-inventory-models.js)。
+  CSRF token，不是 Open Cloud API Key 能做的事。
+
+## 授權
+
+[MIT](LICENSE)

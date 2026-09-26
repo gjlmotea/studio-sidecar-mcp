@@ -1,6 +1,6 @@
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -9,16 +9,28 @@ import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotoc
 /**
  * extract_place 的真機端到端驗證。
  *
- * 驗收標準不是「跑得完」，而是**抽出來的腳本要跟 vibe/roblox/sample-game/src 那份
- * 人工抽取的快照逐位元組一致**。那份快照是先前手工分塊、逐檔校驗做出來的，
+ * 驗收標準不是「跑得完」，而是**抽出來的腳本要跟一份人工抽取的快照
+ * 逐位元組一致**。那份快照是先前手工分塊、逐檔校驗做出來的，
  * 拿它當基準才驗得出這套自動化有沒有漏東西。
  *
- * 用法：node scripts/verify-extract-live.mjs
+ * 用法：
+ *   ROBLOX_VERIFY_PLACE_ID=<placeId> ROBLOX_VERIFY_UNIVERSE_ID=<universeId> \
+ *   ROBLOX_VERIFY_BASELINE=<人工快照的 src 目錄> node scripts/verify-extract-live.mjs
+ *
+ * 目標必須是你自己的 place：流程會開一個 Studio 實例並在裡面跑 Luau（全程唯讀）。
  */
 
-const SAMPLE_GAME = { placeId: '100000000000123', universeId: '10000000123' };
+const TARGET = {
+	placeId: process.env.ROBLOX_VERIFY_PLACE_ID?.trim() ?? '',
+	universeId: process.env.ROBLOX_VERIFY_UNIVERSE_ID?.trim() ?? '',
+};
+const baselineArg = process.env.ROBLOX_VERIFY_BASELINE?.trim();
+if (!/^[0-9]+$/.test(TARGET.placeId) || !/^[0-9]+$/.test(TARGET.universeId) || !baselineArg) {
+	console.error('需要 ROBLOX_VERIFY_PLACE_ID、ROBLOX_VERIFY_UNIVERSE_ID（十進位數字）與 ROBLOX_VERIFY_BASELINE。');
+	process.exit(2);
+}
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
-const baseline = join(projectRoot, '../../roblox/sample-game/src');
+const baseline = resolve(baselineArg);
 
 const transport = new StdioClientTransport({
 	command: process.execPath,
@@ -50,18 +62,20 @@ async function walk(dir, base = dir) {
 }
 
 try {
-	console.log('1. 確認 sample-game 是否已連線');
+	console.log('1. 確認目標 place 是否已連線');
 	// content[0].text 是給人看的摘要，結構化資料在 structuredContent。
 	const listed = (await client.callTool({ name: 'roblox_list_studios', arguments: {} }))
 		.structuredContent;
-	const hasSampleGame = listed.studios.some((s) => (s.windowTitle ?? '').includes('sample-game'));
-	console.log(`   目前 Studio ${listed.studios.length} 個，sample-game ${hasSampleGame ? '已開' : '未開'}`);
+	// 以 placeId 判定目標是否已開：macOS 讀不到視窗標題，不能靠名稱比對。
+	const probe = await client.callTool({ name: 'roblox_place_guard', arguments: { placeId: TARGET.placeId } });
+	const alreadyOpen = !probe.isError;
+	console.log(`   目前 Studio ${listed.studios.length} 個，目標 place ${alreadyOpen ? '已開' : '未開'}`);
 
-	if (!hasSampleGame) {
-		console.log('\n2. 開啟 sample-game（roblox_open_place）');
+	if (!alreadyOpen) {
+		console.log('\n2. 開啟目標 place（roblox_open_place）');
 		const opened = await client.callTool({
 			name: 'roblox_open_place',
-			arguments: { ...SAMPLE_GAME, waitMs: 240_000 },
+			arguments: { ...TARGET, waitMs: 240_000 },
 		});
 		if (opened.isError) throw new Error(`open_place 失敗：${opened.content[0].text}`);
 		const o = opened.structuredContent;
@@ -75,7 +89,7 @@ try {
 	console.log('\n2b. placeId 守衛（roblox_place_guard）');
 	const guard = await client.callTool({
 		name: 'roblox_place_guard',
-		arguments: { placeId: SAMPLE_GAME.placeId },
+		arguments: { placeId: TARGET.placeId },
 	});
 	check('認出目標 place', guard.isError !== true, guard.content?.[0]?.text);
 	if (guard.isError !== true) {
@@ -91,7 +105,7 @@ try {
 	const readOnly = await client.callTool({
 		name: 'roblox_luau_safe',
 		arguments: {
-			placeId: SAMPLE_GAME.placeId,
+			placeId: TARGET.placeId,
 			code: 'return string.format("parts=%d", #game:GetService("Workspace"):GetDescendants())',
 		},
 	});
@@ -102,7 +116,7 @@ try {
 	// 受保護屬性：內建版會讓整段中止，包 pcall 之後應該變成可讀的錯誤而不是呼叫失敗。
 	const protectedProp = await client.callTool({
 		name: 'roblox_luau_safe',
-		arguments: { placeId: SAMPLE_GAME.placeId, code: 'return tostring(game:GetService("Lighting").Technology)' },
+		arguments: { placeId: TARGET.placeId, code: 'return tostring(game:GetService("Lighting").Technology)' },
 	});
 	check('受保護屬性不會讓整段中止',
 		protectedProp.isError !== true,
@@ -116,7 +130,7 @@ try {
 	const BIG = 150_000;
 	const big = await client.callTool({
 		name: 'roblox_luau_safe',
-		arguments: { placeId: SAMPLE_GAME.placeId, code: `return string.rep("A", ${BIG})` },
+		arguments: { placeId: TARGET.placeId, code: `return string.rep("A", ${BIG})` },
 	});
 	check(`🔴 ${BIG} 字元完整取回（內建版會截在 100000）`,
 		big.isError !== true && big.structuredContent?.result?.length === BIG,
@@ -129,13 +143,13 @@ try {
 	const started = Date.now();
 	const res = await client.callTool({
 		name: 'roblox_extract_place',
-		arguments: { placeId: SAMPLE_GAME.placeId, outDir: workDir },
+		arguments: { placeId: TARGET.placeId, outDir: workDir },
 	});
 	if (res.isError) throw new Error(`extract_place 失敗：${res.content[0].text}`);
 	const r = res.structuredContent;
 	console.log(`   ${r.scriptCount} 份腳本｜${r.totalBytes} 位元組｜${r.chunks} 塊｜`
 		+ `${Math.round((Date.now() - started) / 1000)}s`);
-	check('placeId 相符', r.placeId === SAMPLE_GAME.placeId);
+	check('placeId 相符', r.placeId === TARGET.placeId);
 	check('有抽到腳本', r.scriptCount > 0);
 	check('分塊數合理', r.chunks >= 1 && r.chunks === Math.max(1, Math.ceil(r.totalBytes / 70000)),
 		`chunks=${r.chunks} totalBytes=${r.totalBytes}`);

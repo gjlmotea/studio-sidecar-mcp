@@ -2,12 +2,11 @@
 /**
  * MCP Client 啟動點。
  *
- * `ROBLOX_API_KEY` 依根 AGENTS.md SEC-001 只准放在列名核准的
- * `gjlmotea/vibe/roblox/.env.shared`，不得複製到 `.mcp.json` 或其他被追蹤的路徑。
- * 這層把該檔的金鑰讀進 process.env 後才載入 server，讓那把金鑰維持唯一來源。
+ * `ROBLOX_API_KEY` 一律以外部環境變數為準（例如 MCP client 設定裡的 env）。
+ * 沒設定時，再試著讀上層工作區的 `roblox/.env.shared` —— 作者的私人 monorepo 用這個檔
+ * 跨機器共用金鑰，讓它維持唯一來源；獨立 clone 下這個檔不存在，會直接略過。
  *
- * 外部已設好 `ROBLOX_API_KEY` 時一律以外部為準；讀不到檔案就照常啟動，
- * 只有四個 Open Cloud 工具會因缺金鑰而拒絕，其餘工具不受影響。
+ * 讀不到金鑰也照常啟動，只有四個 Open Cloud 工具會因缺金鑰而拒絕，其餘工具不受影響。
  */
 
 import { readFile } from 'node:fs/promises';

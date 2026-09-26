@@ -215,7 +215,7 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
         '逐一詢問連線中的 Studio，回報哪一個的 `game.PlaceId` 等於你要的值，並給出它的 studio_id。'
         + '🔴 **任何寫入之前都該先跑這個。** 內建版的 multi_edit 是用路徑寫入的，'
         + '傳錯 studio_id 會直接覆蓋另一個遊戲的原始碼、沒有復原鍵、而且沒有任何警告。'
-        + '⚠️ `game.Name` 不可信 —— sample-game 開起來時它回的是 `Place1`，只有 placeId 分得出來。',
+        + '⚠️ `game.Name` 不可信 —— 實測有已發佈的 place 開起來時它回的是 `Place1`，只有 placeId 分得出來。',
       inputSchema: placeGuardInputSchema,
       outputSchema: placeGuardOutputSchema,
       annotations: READ_ONLY,
