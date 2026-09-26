@@ -87,7 +87,15 @@ claude mcp add -s local roblox-studio -- /Applications/RobloxStudio.app/Contents
 ```
 
 Windows 的 `StudioMCP.exe` 住在 `%LOCALAPPDATA%\Roblox\Versions\version-<hash>\`，
-**Studio 每次更新都會換目錄**，寫死路徑下次更新就會壞 —— 請用一個在啟動當下才解析路徑的小啟動器。
+**Studio 每次更新都會換目錄**，寫死路徑下次更新就會壞 —— 請用一個在啟動當下才解析路徑的
+小啟動器，並以絕對路徑註冊（`node` 與啟動器都要絕對路徑，理由同下節）：
+
+```bash
+claude mcp add -s local roblox-studio -- "<node 的絕對路徑>" "<啟動器的絕對路徑>"
+```
+
+macOS 那行之所以能直接指執行檔，是因為 app bundle 內的路徑固定、不隨版本改變；
+兩個平台都想共用同一支啟動器時，兩邊都走上面這個形狀。
 
 入口是 `scripts/mcp-launch.mjs` 而不是 `dist/index.js`：它在載入 server 前把金鑰讀進
 `process.env`（外部已設好時以外部為準；讀不到就照常啟動，只有四個 Open Cloud 工具會拒絕）。
@@ -100,10 +108,22 @@ Windows 的 `StudioMCP.exe` 住在 `%LOCALAPPDATA%\Roblox\Versions\version-<hash
 
 兩個獨立的原因疊在一起：
 
-1. **手寫的變數與裸指令容易是壞的。** `${CLAUDE_PROJECT_DIR}` 目前的 Claude Code 不會展開，
-   `claude mcp list` 會報 `Missing environment variables: CLAUDE_PROJECT_DIR`；裸 `node`
-   在有 nvm／conda shell 函式的環境可能靜默解析到錯的版本，所以上面用 `$(which node)`
-   落成絕對路徑。
+1. **手寫的變數與裸指令容易是壞的。** `${CLAUDE_PROJECT_DIR}` 不會展開，而且**沒有任何
+   一層會告訴你這件事**（2026-09-27 於 Claude Code 2.1.110 重驗）：
+
+   - `claude mcp list` 把未展開的字串**原樣印出來**，結論只有 `✗ Failed to connect`；
+     客戶端拿到的是 `CONNECTION_CLOSED`。真正發生的是 node 收到字面路徑、
+     `Cannot find module`、行程立刻結束。
+   - 想在 server 端自己拼路徑也不行：`CLAUDE_PROJECT_DIR` **不在 server 的環境裡**
+     （實測 `null`；同一個行程裡 `CLAUDE_*` 有 24 個，就是沒有它）。changelog 那句
+     「MCP stdio servers now receive `CLAUDE_PROJECT_DIR`」的下半句是 **plugin configs**
+     才能在命令裡引用。
+   - 相對路徑會通，但 cwd 跟著**啟動目錄**走，不是 `.mcp.json` 所在目錄；
+     而 `.mcp.json` 本身往上找得到 —— 於是在專案目錄開會連上、在子目錄開就斷，
+     安靜地半壞。
+
+   裸 `node` 則在有 nvm／conda shell 函式的環境可能靜默解析到錯的版本，
+   所以上面用 `$(which node)` 落成絕對路徑。
 2. **project scope 要互動核准。** `.mcp.json` 會跟著 git 走、可能是別人塞的，所以 Claude
    Code 一定要使用者按過同意才載入，而那個提示**在非互動 session 永遠不會跳出來**。
 
