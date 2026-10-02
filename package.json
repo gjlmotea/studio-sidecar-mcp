@@ -6,7 +6,7 @@
   "description": "Roblox Studio companion MCP：補內建 Studio MCP 結構上做不到的那一層 —— 開啟指定 place、StudioMCP 行程治理、Open Cloud 資產上傳與就地更新。不重做內建版已有的工具面。",
   "license": "MIT",
   "engines": {
-    "node": "22.23.1"
+    "node": "24.21.0"
   },
   "packageManager": "pnpm@11.17.0",
   "main": "./dist/index.js",

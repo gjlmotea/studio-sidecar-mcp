@@ -57,7 +57,7 @@ MCP 沒有任何規定禁止一個行程同時是 server 與 client。本 server
 
 ## 設定
 
-需要 Node.js 22 與 pnpm。先在本 repo 根目錄安裝並建置：
+需要 Node.js 24 與 pnpm。先在本 repo 根目錄安裝並建置：
 
 ```bash
 pnpm install
