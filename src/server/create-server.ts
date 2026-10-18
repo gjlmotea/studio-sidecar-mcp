@@ -5,6 +5,12 @@ import { registerTools } from './register-tools.js';
 
 export const SERVER_NAME = 'roblox-mcp';
 
+/**
+ * 單次 tools/call 引數的元素上限（陣列元素加物件成員），SDK 在 zod 驗證之前先數。
+ * 每個工具的引數都是少數幾個純量，最多不到 10 個；1,000 留了充分餘裕。
+ */
+export const MAX_TOOL_INPUT_ELEMENTS = 1_000;
+
 export function createMcpServer(options: {
   readonly service: RobloxService;
   readonly version: string;
@@ -12,6 +18,7 @@ export function createMcpServer(options: {
   const server = new McpServer(
     { name: SERVER_NAME, version: options.version },
     {
+      maxToolInputElements: MAX_TOOL_INPUT_ELEMENTS,
       instructions: [
         'This server is a companion layer for Roblox Studio\'s **built-in** MCP, not a replacement.',
         'For script reading and writing, scene queries, generate_mesh, screen_capture and playtesting, keep using the built-in tools. They are not here and will not be rebuilt here.',
