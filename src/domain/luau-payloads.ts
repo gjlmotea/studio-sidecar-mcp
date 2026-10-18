@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { SENTINEL } from './extraction.js';
 
 /**
@@ -7,11 +9,27 @@ import { SENTINEL } from './extraction.js';
  * - **全程唯讀**，不對 DataModel 做任何寫入。
  * - 結果放進 `shared.*`（Lua VM 的執行期記憶體，**不碰 DataModel、不進 .rbxl**），
  *   之後的切片呼叫就只剩兩行，不必每次重算。用完設回 `nil`。
+ * - 🔴 **每次呼叫用自己的 buffer 名**（`newBufferKey()`），建立、切片、釋放都帶同一把。
+ *   `shared` 是整個 Studio 共用的；固定一個名字時，兩個重疊的呼叫會讀到對方的內容，
+ *   長度剛好一樣就照樣回報成功。
  * - 每一段回傳都以哨兵收尾，讓呼叫端能辨識截斷。
  */
 
-/** 存放抽取結果的 Lua 全域。用完要清掉。 */
-const BUFFER = 'shared.RBXEXTRACT';
+/** buffer 名的格式：直接拼進 Luau 當 `shared.<key>`，所以只能是識別字。 */
+const BUFFER_KEY = /^RBXEXTRACT_[0-9a-f]{32}$/;
+
+/** 一次呼叫專用的 buffer 名。 */
+export function newBufferKey(): string {
+  return `RBXEXTRACT_${randomUUID().replaceAll('-', '')}`;
+}
+
+/** 存放結果的 Lua 全域。用完要清掉。 */
+function bufferRef(key: string): string {
+  if (!BUFFER_KEY.test(key)) {
+    throw new Error(`Invalid buffer key: ${JSON.stringify(key)}`);
+  }
+  return `shared.${key}`;
+}
 
 /** 走訪這些 service 底下的腳本。與抽出後 `src/<Service>/…` 的目錄約定一致。 */
 const SCRIPT_SERVICES = [
@@ -43,7 +61,8 @@ return string.format("placeId=%d expected=%d match=%s gameId=%d", game.PlaceId, 
  * `#src` 在 Lua 數的是**位元組**，這正是呼叫端要拿來校驗的數字 ——
  * 用 JS 的 `String.length`（數字元）比會對不起來。
  */
-export function buildScriptStreamLuau(): string {
+export function buildScriptStreamLuau(key: string): string {
+  const buffer = bufferRef(key);
   return `
 local out, count = {}, 0
 local function walk(inst, path)
@@ -65,8 +84,8 @@ for _, name in ipairs({${SCRIPT_SERVICES.map((s) => `"${s}"`).join(', ')}}) do
 	local ok, service = pcall(function() return game:GetService(name) end)
 	if ok and service then walk(service, name) end
 end
-${BUFFER} = table.concat(out, "\\n")
-return string.format("bytes=%d count=%d", #${BUFFER}, count) .. "${SENTINEL}"`;
+${buffer} = table.concat(out, "\\n")
+return string.format("bytes=%d count=%d", #${buffer}, count) .. "${SENTINEL}"`;
 }
 
 /**
@@ -76,9 +95,9 @@ return string.format("bytes=%d count=%d", #${BUFFER}, count) .. "${SENTINEL}"`;
  * 呼叫端拿它當下一段的起點。若改成兩邊各自算，只要有一邊的邊界調整邏輯不同步，
  * 就會漏掉或重複位元組，而且長度校驗要到最後才爆。
  */
-export function sliceBufferLuau(start: number, maxBytes: number): string {
+export function sliceBufferLuau(key: string, start: number, maxBytes: number): string {
   return `
-local s = ${BUFFER}
+local s = ${bufferRef(key)}
 if type(s) ~= "string" then return "<<<AT|0>>>" .. "${SENTINEL}" end
 local start = ${start}
 local finish = math.min(start + ${maxBytes} - 1, #s)
@@ -96,8 +115,8 @@ return string.format("<<<AT|%d>>>", finish) .. string.sub(s, start, finish) .. "
 }
 
 /** 用完把 buffer 還給 Lua VM。 */
-export function releaseBufferLuau(): string {
-  return `${BUFFER} = nil return "released${SENTINEL}"`;
+export function releaseBufferLuau(key: string): string {
+  return `${bufferRef(key)} = nil return "released${SENTINEL}"`;
 }
 
 /**
@@ -109,7 +128,8 @@ export function releaseBufferLuau(): string {
  * - **結果進 buffer 而不是直接回傳** —— 直接回傳超過 100,000 字元會被靜默截斷。
  *   放進 buffer 之後由呼叫端分塊取回，長度不再是限制。
  */
-export function runUserLuau(code: string): string {
+export function runUserLuau(key: string, code: string): string {
+  const buffer = bufferRef(key);
   return `
 local ok, result = pcall(function()
 ${code}
@@ -120,7 +140,7 @@ if ok then
 else
 	text = "!!LUAU_ERROR!! " .. tostring(result)
 end
-${BUFFER} = text
+${buffer} = text
 return string.format("ok=%s bytes=%d", tostring(ok), #text) .. "${SENTINEL}"`;
 }
 

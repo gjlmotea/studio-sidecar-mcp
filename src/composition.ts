@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, realpath } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 
 import { DarwinProcessInspector } from './adapters/darwin-process-inspector.js';
 import { FetchOpenCloud } from './adapters/fetch-open-cloud.js';
@@ -7,44 +8,68 @@ import { LocalStudioHost } from './adapters/local-studio-host.js';
 import { McpStudioBridge } from './adapters/mcp-studio-bridge.js';
 import { WindowsProcessInspector } from './adapters/windows-process-inspector.js';
 import { RobloxService } from './application/roblox-service.js';
+import { sanitizeSegment } from './domain/extraction.js';
+import { isPathInside } from './domain/path-containment.js';
 import type { ProcessInspector } from './ports/process-inspector.js';
 import { StudioHostError } from './ports/studio-host.js';
 
-/**
- * 把 DataModel 路徑裡不能當檔名的東西換掉。
- *
- * 🔴 Roblox 的實例名稱幾乎沒有限制 —— 可以叫 `..`、可以含 `:`、可以含路徑分隔符。
- * 直接拿來拼檔案路徑會穿越出輸出目錄。
- */
-export function sanitizeSegment(segment: string): string {
-  // 只換掉在 Windows 或 POSIX 真的不能當檔名的字元。空白與連字號是合法的，
-  // 換掉只會讓快照的檔名跟 DataModel 的實例名對不起來。
-  // 用明確字元集而不是正規表示式字面值 —— 這串要跳脫的東西太多，寫錯不會報錯只會靜默漏掉。
-  const FORBIDDEN = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
-  const cleaned = [...segment]
-    .map((char) => (FORBIDDEN.has(char) || char.charCodeAt(0) < 0x20 ? '_' : char))
-    .join('')
-    // Windows 不允許檔名以點或空白結尾。
-    .replace(/[. ]+$/, '');
-  if (cleaned === '' || cleaned === '.' || cleaned === '..') return '_';
-  return cleaned;
-}
+// 檔名清理屬於抽取的 domain 規則；這裡轉出去，維持原本的匯入點。
+export { sanitizeSegment };
 
-/** 寫進輸出目錄，並確保最終路徑真的落在目錄內。 */
+/**
+ * 寫進輸出目錄，並確保最終路徑真的落在目錄內。
+ *
+ * 🔴 光比字面路徑不夠：輸出目錄裡已經有的 symlink（資料夾或檔案）會把寫入帶到外面。
+ * 所以每往下一層都先 realpath 確認還在輸出目錄的 realpath 之內才往下建，
+ * 目標檔本身是 symlink 時一律拒寫，不管它指到哪裡。
+ */
 export async function writeIntoOutDir(
   outDir: string,
   relativePath: string,
   content: string,
 ): Promise<string> {
-  const safe = relativePath.split('/').map(sanitizeSegment).join('/');
+  const segments = relativePath.split('/').map(sanitizeSegment);
+  const fileName = segments.pop() ?? '_';
   const root = resolve(outDir);
-  const target = resolve(join(root, safe));
-  const rel = relative(root, target);
-  if (rel.startsWith('..')) {
+  await mkdir(root, { recursive: true });
+  const realRoot = await realpath(root);
+
+  let dir = root;
+  for (const segment of segments) {
+    dir = join(dir, segment);
+    try {
+      await mkdir(dir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    // 先確認這一層還在裡面再往下建；不然 mkdir 會順著 symlink 在外面建出資料夾。
+    if (!isPathInside(realRoot, await realpath(dir))) {
+      throw new Error(`Output path escapes the output folder through a symlink: ${relativePath}`);
+    }
+  }
+
+  const target = join(dir, fileName);
+  if (!isPathInside(root, target)) {
     throw new Error(`Output path escapes the output folder: ${relativePath}`);
   }
-  await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, content, 'utf8');
+  const existing = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (existing?.isSymbolicLink() === true) {
+    throw new Error(`Refusing to write through a symlink: ${target}`);
+  }
+  if (existing !== undefined && !existing.isFile()) {
+    throw new Error(`Output path exists and is not a regular file: ${target}`);
+  }
+  // O_NOFOLLOW 補檢查與開檔之間被換成 symlink 的空窗（Windows 沒有這個旗標，退回 0）。
+  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0);
+  const handle = await open(target, flags, 0o666);
+  try {
+    await handle.writeFile(content, 'utf8');
+  } finally {
+    await handle.close();
+  }
   return target;
 }
 

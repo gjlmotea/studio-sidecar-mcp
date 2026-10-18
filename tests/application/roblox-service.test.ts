@@ -1,8 +1,8 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { RobloxService, RobloxServiceError } from '../../src/application/roblox-service.js';
 import type { AssetRecord, CleanupOutcome, StudioSnapshot } from '../../src/domain/contracts.js';
@@ -148,6 +148,10 @@ beforeEach(async () => {
   await writeFile(fbxPath, '; fbx');
 });
 
+afterEach(async () => {
+  await rm(workDir, { recursive: true, force: true });
+});
+
 describe('openPlace', () => {
   it('把啟動意圖以陣列交給 host，不自己拼命令列', async () => {
     const service = await makeService([]);
@@ -272,6 +276,38 @@ describe('uploadAsset', () => {
     await expect(service.uploadAsset({ filePath: objPath, displayName: 'X' })).rejects.toThrow(
       /Cannot infer the asset type from the file extension/,
     );
+  });
+
+  it('🔴 允許目錄裡的 symlink 指到外面時拒絕 —— 不能借連結把任意檔案送出去', async () => {
+    const allowed = join(workDir, 'allowed');
+    const outside = join(workDir, 'outside');
+    await mkdir(allowed);
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.fbx'), '; private');
+    await symlink(join(outside, 'secret.fbx'), join(allowed, 'link.fbx'));
+    await symlink(outside, join(allowed, 'linked-dir'), 'dir');
+
+    const service = await makeService([allowed]);
+    await expect(
+      service.uploadAsset({ filePath: join(allowed, 'link.fbx'), displayName: 'X' }),
+    ).rejects.toThrow(/is not inside an allowed folder/);
+    await expect(
+      service.uploadAsset({ filePath: join(allowed, 'linked-dir', 'secret.fbx'), displayName: 'X' }),
+    ).rejects.toThrow(/is not inside an allowed folder/);
+    await expect(
+      service.updateAsset({ assetId: '100000000000001', filePath: join(allowed, 'link.fbx') }),
+    ).rejects.toThrow(/is not inside an allowed folder/);
+    expect(openCloud.calls).toEqual([]);
+    expect(await readFile(join(outside, 'secret.fbx'), 'utf8')).toBe('; private');
+  });
+
+  it('來源必須是一般檔案，資料夾不行', async () => {
+    await mkdir(join(workDir, 'folder.fbx'));
+    const service = await makeService([workDir]);
+    await expect(
+      service.uploadAsset({ filePath: join(workDir, 'folder.fbx'), displayName: 'X' }),
+    ).rejects.toThrow(/is not a regular file/);
+    expect(openCloud.calls).not.toContain('create');
   });
 
   it('路徑合法時才送出去', async () => {

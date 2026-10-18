@@ -155,14 +155,97 @@ export function parseScriptStream(stream: string): readonly ExtractedFile[] {
 }
 
 /** Rojo 慣例：副檔名本身就標示實例型別。 */
-export function fileNameFor(path: string, className: string): string {
-  const leaf = path.slice(path.lastIndexOf('/') + 1);
+export function scriptExtension(className: string): string {
   switch (className) {
     case 'Script':
-      return `${leaf}.server.luau`;
+      return '.server.luau';
     case 'LocalScript':
-      return `${leaf}.client.luau`;
+      return '.client.luau';
     default:
-      return `${leaf}.luau`;
+      return '.luau';
   }
+}
+
+export function fileNameFor(path: string, className: string): string {
+  return `${path.slice(path.lastIndexOf('/') + 1)}${scriptExtension(className)}`;
+}
+
+/**
+ * 把 DataModel 路徑裡不能當檔名的東西換掉。
+ *
+ * 🔴 Roblox 的實例名稱幾乎沒有限制 —— 可以叫 `..`、可以含 `:`、可以含路徑分隔符。
+ * 直接拿來拼檔案路徑會穿越出輸出目錄。
+ */
+export function sanitizeSegment(segment: string): string {
+  // 只換掉在 Windows 或 POSIX 真的不能當檔名的字元。空白與連字號是合法的，
+  // 換掉只會讓快照的檔名跟 DataModel 的實例名對不起來。
+  // 用明確字元集而不是正規表示式字面值 —— 這串要跳脫的東西太多，寫錯不會報錯只會靜默漏掉。
+  const FORBIDDEN = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
+  const cleaned = [...segment]
+    .map((char) => (FORBIDDEN.has(char) || char.charCodeAt(0) < 0x20 ? '_' : char))
+    .join('')
+    // Windows 不允許檔名以點或空白結尾。
+    .replace(/[. ]+$/, '');
+  if (cleaned === '' || cleaned === '.' || cleaned === '..') return '_';
+  return cleaned;
+}
+
+/** Windows 與 macOS 預設的檔案系統不分大小寫，比對檔名一律用這個。 */
+function foldName(name: string): string {
+  return name.normalize('NFC').toLowerCase();
+}
+
+type NameNode = {
+  /** 這一層已經用掉的名字（資料夾與檔案共用），存 foldName 後的值。 */
+  readonly taken: Set<string>;
+  /** 原始實例名 → 這一層給它的資料夾名與下一層。 */
+  readonly dirs: Map<string, { readonly name: string; readonly node: NameNode }>;
+};
+
+function claimName(node: NameNode, candidate: (n: number) => string): string {
+  for (let n = 1; ; n += 1) {
+    const name = candidate(n);
+    const key = foldName(name);
+    if (!node.taken.has(key)) {
+      node.taken.add(key);
+      return name;
+    }
+  }
+}
+
+/**
+ * 在寫任何一個檔之前，一次排好每份腳本的相對路徑（`src/<Service>/…/<名>.<型別>.luau`）。
+ *
+ * 🔴 三種碰撞都會讓後寫的檔**靜默覆蓋**先寫的：
+ * - 清理後同名：`A:B` 與 `A?B` 都變成 `A_B`。
+ * - 只差大小寫：`Foo` 與 `foo` 在 Windows 與 macOS 預設的檔案系統上是同一個檔。
+ * - DataModel 本來就允許兄弟實例同名。
+ *
+ * 撞名時依資料流順序加 `~2`、`~3`…（資料夾加在名字後，檔案加在副檔名前），
+ * 同一份 place 每次抽出來的檔名都一樣。回傳的順序與輸入相同。
+ */
+export function planScriptPaths(
+  files: readonly Pick<ExtractedFile, 'path' | 'className'>[],
+): readonly string[] {
+  const newNode = (): NameNode => ({ taken: new Set(), dirs: new Map() });
+  const root = newNode();
+  return files.map((file) => {
+    const segments = file.path.split('/');
+    const leaf = segments.pop() ?? '';
+    const out = ['src'];
+    let node = root;
+    for (const raw of segments) {
+      let dir = node.dirs.get(raw);
+      if (dir === undefined) {
+        const base = sanitizeSegment(raw);
+        dir = { name: claimName(node, (n) => (n === 1 ? base : `${base}~${n}`)), node: newNode() };
+        node.dirs.set(raw, dir);
+      }
+      out.push(dir.name);
+      node = dir.node;
+    }
+    const ext = scriptExtension(file.className);
+    out.push(claimName(node, (n) => sanitizeSegment(n === 1 ? `${leaf}${ext}` : `${leaf}~${n}${ext}`)));
+    return out.join('/');
+  });
 }

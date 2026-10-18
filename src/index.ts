@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { delimiter } from 'node:path';
 
 import { createRobloxService } from './composition.js';
+import { installShutdown } from './lifecycle.js';
 import { log } from './logger.js';
 import { createMcpServer } from './server/create-server.js';
 import { connectStdio } from './transports/stdio.js';
@@ -48,7 +49,22 @@ async function main(): Promise<void> {
   });
 
   const server = createMcpServer({ service, version });
-  await connectStdio(server);
+  // listener 先掛再接 stdio：Host 在握手前就關掉 stdin 也收得到。
+  const lifecycle = installShutdown(
+    { stdin: process.stdin, stdout: process.stdout, signals: process },
+    [
+      // 收 Studio 橋才會連帶收掉 StudioMCP 子行程；不收就留下一隻 stub。
+      { name: 'studio-bridge', close: async () => await service.closeBridge() },
+      { name: 'stdio', close: async () => await server.close() },
+    ],
+  );
+  try {
+    if (!process.stdin.readableEnded && !process.stdin.destroyed) await connectStdio(server);
+  } catch (error) {
+    await lifecycle.shutdown('startup-failure');
+    throw error;
+  }
+  if (!(await lifecycle.startupComplete())) return;
 
   const status = service.status();
   log('info', 'ready', {
@@ -60,30 +76,6 @@ async function main(): Promise<void> {
     // 祕密只記名稱不記值。
     apiKey: status.openCloudConfigured ? 'set' : 'unset',
     creatorUserId: status.defaultCreatorConfigured ? 'set' : 'unset',
-  });
-
-  let closing = false;
-  const shutdown = async (signal: string): Promise<void> => {
-    if (closing) return;
-    closing = true;
-    log('info', 'shutting down', { signal });
-    // 先收 Studio 橋 —— 不收就會留下一隻 StudioMCP stub。
-    await service.closeBridge().catch(() => undefined);
-    await server.close();
-  };
-
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.on(signal, () => {
-      void shutdown(signal);
-    });
-  }
-
-  process.stdout.on('error', (error: NodeJS.ErrnoException) => {
-    if (error.code === 'EPIPE') {
-      void shutdown('EPIPE');
-      return;
-    }
-    throw error;
   });
 }
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -14,18 +15,20 @@ import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotoc
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 
+const serverEnv = {
+  ...getDefaultEnvironment(),
+  // 刻意全部留空：smoke 要驗的正是「沒設定時明確拒絕」而不是靜默失敗。
+  ROBLOX_API_KEY: '',
+  ROBLOX_UPLOAD_ROOT: '',
+  ROBLOX_CREATOR_USER_ID: '',
+};
+
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: ['dist/index.js'],
   cwd: projectRoot,
   stderr: 'pipe',
-  env: {
-    ...getDefaultEnvironment(),
-    // 刻意全部留空：smoke 要驗的正是「沒設定時明確拒絕」而不是靜默失敗。
-    ROBLOX_API_KEY: '',
-    ROBLOX_UPLOAD_ROOT: '',
-    ROBLOX_CREATOR_USER_ID: '',
-  },
+  env: serverEnv,
 });
 
 const client = new Client({ name: 'roblox-mcp-smoke', version: '0.0.0' });
@@ -79,3 +82,45 @@ try {
 } finally {
   await client.close();
 }
+
+/**
+ * Host 關掉 stdin 時，server 要走同一條關機流程（那裡會收 StudioMCP 子行程）並自己結束。
+ * 不能靠 SDK 的 client.close() 驗：它等兩秒沒結束就送 SIGTERM，沒處理 EOF 的版本也會過。
+ */
+async function checkExitOnStdinEof() {
+  const child = spawn(process.execPath, ['dist/index.js'], {
+    cwd: projectRoot,
+    env: serverEnv,
+    stdio: ['pipe', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  const exited = new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
+  const ready = new Promise((resolve) => {
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      if (stderr.includes('info: ready')) resolve('ready');
+    });
+  });
+  const timeout = (ms) => new Promise((resolve) => setTimeout(() => resolve('timeout'), ms).unref());
+
+  const started = await Promise.race([ready, exited.then(() => 'exited'), timeout(10_000)]);
+  if (started !== 'ready') {
+    child.kill('SIGKILL');
+    assert.fail(`the server did not become ready (${started}); stderr:\n${stderr}`);
+  }
+
+  child.stdin.end();
+  const outcome = await Promise.race([exited, timeout(5_000)]);
+  if (outcome === 'timeout') {
+    child.kill('SIGKILL');
+    assert.fail(`the server did not exit within 5 s after stdin EOF; stderr:\n${stderr}`);
+  }
+  assert.deepEqual(outcome, { code: 0, signal: null }, `unexpected exit after stdin EOF; stderr:\n${stderr}`);
+  assert.match(stderr, /shutting down .*stdin-(end|close)/, `stdin EOF should go through the shutdown path; stderr:\n${stderr}`);
+}
+
+await checkExitOnStdinEof();
+console.log('stdio smoke passed: stdin EOF runs the shutdown path and the server exits on its own.');

@@ -1,6 +1,11 @@
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { RobloxService, RobloxServiceError } from '../../src/application/roblox-service.js';
+import { writeIntoOutDir } from '../../src/composition.js';
 import { ExtractionError, SENTINEL } from '../../src/domain/extraction.js';
 import type { AssetRecord, CleanupOutcome, StudioSnapshot } from '../../src/domain/contracts.js';
 import type { OpenCloud } from '../../src/ports/open-cloud.js';
@@ -182,5 +187,190 @@ describe('切片不前進時的保護', () => {
     }
     bridge = new StuckBridge();
     await expect(makeService().runLuau({ placeId: '1', code: 'x' })).rejects.toThrow(ExtractionError);
+  });
+});
+
+/** 照 extraction 的格式組出腳本資料流。 */
+function streamOf(scripts: readonly { path: string; className: string; source: string }[]): string {
+  return scripts
+    .map((s) => `<<<RBXFILE|${s.path}|${s.className}|${Buffer.byteLength(s.source, 'utf8')}>>>\n${s.source}`)
+    .join('\n');
+}
+
+/**
+ * 每個 `shared.<key>` 各存一份狀態的假橋，並刻意讓呼叫交錯：
+ * 要等 `expectedCreates` 個呼叫都建好 buffer 才一起往下切片，每一步都先讓出執行權。
+ */
+class KeyedBridge implements StudioBridge {
+  readonly buffers = new Map<string, string>();
+  readonly keys = { create: [] as string[], slice: [] as string[], release: [] as string[] };
+  stream = '';
+  sliceCap = 2;
+  readonly #expectedCreates: number;
+  #creates = 0;
+  #open: () => void = () => undefined;
+  readonly #gate = new Promise<void>((resolve) => {
+    this.#open = resolve;
+  });
+
+  constructor(expectedCreates: number) {
+    this.#expectedCreates = expectedCreates;
+  }
+
+  static keyOf(code: string): string {
+    const match = /shared(?:\.([A-Za-z_]\w*)|\[\s*"([^"]+)"\s*\])/.exec(code);
+    const key = match?.[1] ?? match?.[2];
+    if (key === undefined) throw new Error(`payload has no shared buffer key: ${code.slice(0, 80)}`);
+    return key;
+  }
+
+  async listStudios(): Promise<readonly ConnectedStudio[]> {
+    return [{ id: 's1', name: 'Target' }];
+  }
+
+  async executeLuau(_studioId: string, code: string): Promise<string> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (code.includes('match=')) return `placeId=1 expected=1 match=true gameId=99${SENTINEL}`;
+    if (code.includes('JSONEncode')) return `{"placeId":1}${SENTINEL}`;
+    if (code.includes('<<<AT|')) {
+      const key = KeyedBridge.keyOf(code);
+      this.keys.slice.push(key);
+      const text = this.buffers.get(key);
+      if (text === undefined) return `<<<AT|0>>>${SENTINEL}`;
+      const start = Number.parseInt(/local start = (\d+)/.exec(code)?.[1] ?? '1', 10);
+      const bytes = Buffer.from(text, 'utf8');
+      const end = Math.min(start + this.sliceCap - 1, bytes.length);
+      return `<<<AT|${end}>>>${bytes.subarray(start - 1, end).toString('utf8')}${SENTINEL}`;
+    }
+    if (code.includes('= nil')) {
+      const key = KeyedBridge.keyOf(code);
+      this.keys.release.push(key);
+      this.buffers.delete(key);
+      return `released${SENTINEL}`;
+    }
+    const isStream = code.includes('RBXFILE');
+    if (isStream || code.includes('pcall(function()')) {
+      const key = KeyedBridge.keyOf(code);
+      this.keys.create.push(key);
+      const text = isStream ? this.stream : (/return "([^"]*)"/.exec(code)?.[1] ?? '');
+      this.buffers.set(key, text);
+      this.#creates += 1;
+      if (this.#creates >= this.#expectedCreates) this.#open();
+      await this.#gate;
+      const bytes = Buffer.byteLength(text, 'utf8');
+      return isStream
+        ? `bytes=${bytes} count=${text.split('<<<RBXFILE|').length - 1}${SENTINEL}`
+        : `ok=true bytes=${bytes}${SENTINEL}`;
+    }
+    return `unhandled${SENTINEL}`;
+  }
+
+  async close(): Promise<void> {}
+}
+
+type OutDirWriter = (outDir: string, relativePath: string, content: string) => Promise<string>;
+
+function keyedService(
+  keyed: KeyedBridge,
+  writeFile: OutDirWriter = async (_outDir, relativePath) => relativePath,
+): RobloxService {
+  return new RobloxService({
+    studio: noopHost,
+    openCloud: noopCloud,
+    version: '0.1.0',
+    allowedUploadRoots: [],
+    bridge: keyed,
+    writeFile,
+  });
+}
+
+function settledValue<T>(result: PromiseSettledResult<T>): T | string {
+  return result.status === 'fulfilled' ? result.value : `rejected: ${String(result.reason)}`;
+}
+
+describe('🔴 重疊的呼叫各用各的 Lua buffer', () => {
+  it('兩個重疊的 runLuau 各自拿回自己的結果', async () => {
+    const keyed = new KeyedBridge(2);
+    const service = keyedService(keyed);
+    const results = await Promise.allSettled([
+      service.runLuau({ placeId: '1', code: 'return "alpha"' }),
+      service.runLuau({ placeId: '1', code: 'return "omega"' }),
+    ]);
+    const values = results.map(settledValue);
+    expect(values.map((v) => (typeof v === 'string' ? v : v.result))).toEqual(['alpha', 'omega']);
+    // 建立、切片、釋放都帶同一把 key；兩個呼叫的 key 不同；用完全部釋放。
+    expect(new Set(keyed.keys.create).size).toBe(2);
+    expect(new Set([...keyed.keys.slice, ...keyed.keys.release])).toEqual(new Set(keyed.keys.create));
+    expect(keyed.keys.release).toHaveLength(2);
+    expect(keyed.buffers.size).toBe(0);
+  });
+
+  it('extractPlace 與 runLuau 重疊時互不污染', async () => {
+    const keyed = new KeyedBridge(2);
+    keyed.sliceCap = 7;
+    keyed.stream = streamOf([
+      { path: 'ServerScriptService/Main', className: 'Script', source: 'print("main")' },
+      { path: 'ReplicatedStorage/Util', className: 'ModuleScript', source: 'return {}' },
+    ]);
+    const written = new Map<string, string>();
+    const service = keyedService(keyed, async (_outDir, relativePath, content) => {
+      written.set(relativePath, content);
+      return relativePath;
+    });
+    const [extract, run] = await Promise.allSettled([
+      service.extractPlace({ placeId: '1', outDir: 'out' }),
+      service.runLuau({ placeId: '1', code: 'return "alpha"' }),
+    ]);
+    expect(settledValue(run)).toMatchObject({ ok: true, result: 'alpha' });
+    expect(settledValue(extract)).toMatchObject({ scriptCount: 2 });
+    expect(written.get('src/ServerScriptService/Main.server.luau')).toBe('print("main")');
+    expect(written.get('src/ReplicatedStorage/Util.luau')).toBe('return {}');
+  });
+});
+
+describe('🔴 extractPlace 的檔名碰撞', () => {
+  it('清理後同名、只差大小寫、兄弟同名都各寫一份，scripts.json 記的是實際寫入的路徑', async () => {
+    const outDir = await mkdtemp(join(tmpdir(), 'roblox-mcp-extract-'));
+    try {
+      const scripts = [
+        { path: 'ServerScriptService/A:B', className: 'Script', source: 'print("colon")' },
+        { path: 'ServerScriptService/A?B', className: 'Script', source: 'print("question")' },
+        { path: 'ServerScriptService/Foo', className: 'ModuleScript', source: 'return "upper"' },
+        { path: 'ServerScriptService/foo', className: 'ModuleScript', source: 'return "lower"' },
+        { path: 'ServerScriptService/Main', className: 'Script', source: 'print("first")' },
+        { path: 'ServerScriptService/Main', className: 'Script', source: 'print("second")' },
+        { path: 'ReplicatedStorage/X:Y/Init', className: 'LocalScript', source: 'print("xy colon")' },
+        { path: 'ReplicatedStorage/X?Y/Init', className: 'LocalScript', source: 'print("xy question")' },
+      ];
+      const keyed = new KeyedBridge(1);
+      keyed.sliceCap = 60_000;
+      keyed.stream = streamOf(scripts);
+      const outcome = await keyedService(keyed, writeIntoOutDir).extractPlace({ placeId: '1', outDir });
+
+      const index = JSON.parse(await readFile(join(outDir, 'scene', 'scripts.json'), 'utf8')) as {
+        scripts: { path: string; file: string }[];
+      };
+      const files = index.scripts.map((entry) => entry.file);
+      // 名稱表在大小寫不敏感的檔案系統上也不能撞。
+      expect(new Set(files.map((file) => file.toLowerCase())).size).toBe(scripts.length);
+      // 每一筆都讀得回自己的原始碼。
+      for (const [i, entry] of index.scripts.entries()) {
+        expect(await readFile(join(outDir, entry.file), 'utf8')).toBe(scripts[i]?.source);
+      }
+      expect(new Set(outcome.written).size).toBe(outcome.written.length);
+      // 後綴照資料流順序給，同一份 place 每次抽出來的檔名一樣。
+      expect(files).toEqual([
+        'src/ServerScriptService/A_B.server.luau',
+        'src/ServerScriptService/A_B~2.server.luau',
+        'src/ServerScriptService/Foo.luau',
+        'src/ServerScriptService/foo~2.luau',
+        'src/ServerScriptService/Main.server.luau',
+        'src/ServerScriptService/Main~2.server.luau',
+        'src/ReplicatedStorage/X_Y/Init.client.luau',
+        'src/ReplicatedStorage/X_Y~2/Init.client.luau',
+      ]);
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
   });
 });

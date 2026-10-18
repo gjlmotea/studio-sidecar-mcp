@@ -1,18 +1,19 @@
-import { existsSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { realpathSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { assertArchivable, inferAssetType, type AssetType } from '../domain/asset-types.js';
 import {
   DEFAULT_CHUNK_BYTES,
   ExtractionError,
-  fileNameFor,
   parseScriptStream,
+  planScriptPaths,
   unwrapChunk,
   type ExtractedFile,
 } from '../domain/extraction.js';
 import {
   buildScriptStreamLuau,
   LUAU_ERROR_PREFIX,
+  newBufferKey,
   parseSliceHeader,
   placeGuardLuau,
   placeMetaLuau,
@@ -20,6 +21,7 @@ import {
   runUserLuau,
   sliceBufferLuau,
 } from '../domain/luau-payloads.js';
+import { isPathInside } from '../domain/path-containment.js';
 import type { StudioBridge } from '../ports/studio-bridge.js';
 import type {
   AssetRecord,
@@ -164,6 +166,7 @@ export class RobloxService {
   async #drainBuffer(
     bridge: StudioBridge,
     studioId: string,
+    key: string,
     totalBytes: number,
     chunkBytes: number,
   ): Promise<{ readonly text: string; readonly chunks: number }> {
@@ -171,7 +174,7 @@ export class RobloxService {
     let cursor = 1;
     let chunks = 0;
     while (cursor <= totalBytes) {
-      const raw = await bridge.executeLuau(studioId, sliceBufferLuau(cursor, chunkBytes));
+      const raw = await bridge.executeLuau(studioId, sliceBufferLuau(key, cursor, chunkBytes));
       const body = unwrapChunk(raw, `slice @${cursor}`);
       const { endOffset, body: payload } = parseSliceHeader(body);
       if (endOffset < cursor) {
@@ -202,9 +205,9 @@ export class RobloxService {
    * 橋的生命週期屬於整個 server（`closeBridge()` 在關機時呼叫），
    * 這樣既避開那個競爭，也少生一大堆 stub。
    */
-  async #releaseBuffer(bridge: StudioBridge, studioId?: string): Promise<void> {
+  async #releaseBuffer(bridge: StudioBridge, key: string, studioId?: string): Promise<void> {
     try {
-      if (studioId !== undefined) await bridge.executeLuau(studioId, releaseBufferLuau());
+      if (studioId !== undefined) await bridge.executeLuau(studioId, releaseBufferLuau(key));
     } catch {
       // 釋放失敗不該蓋掉真正的錯誤。
     }
@@ -256,12 +259,14 @@ export class RobloxService {
   }> {
     const bridge = this.#requireBridge();
     const chunkBytes = options.chunkBytes ?? DEFAULT_CHUNK_BYTES;
+    // 這次呼叫專用的 buffer：建立、切片、釋放都用它，重疊的呼叫才不會讀到彼此的內容。
+    const key = newBufferKey();
     let studioId: string | undefined;
     try {
       const target = await this.#findStudioByPlaceId(bridge, options.placeId);
       studioId = target.id;
 
-      const summaryRaw = await bridge.executeLuau(target.id, runUserLuau(options.code));
+      const summaryRaw = await bridge.executeLuau(target.id, runUserLuau(key, options.code));
       const summary = unwrapChunk(summaryRaw, 'run Luau');
       const bytes = Number.parseInt(/bytes=(\d+)/.exec(summary)?.[1] ?? '', 10);
       const ok = /ok=true/.test(summary);
@@ -269,11 +274,11 @@ export class RobloxService {
         throw new ExtractionError(`Could not parse the run summary: ${JSON.stringify(summary.slice(0, 120))}`);
       }
 
-      const { text, chunks } = await this.#drainBuffer(bridge, target.id, bytes, chunkBytes);
+      const { text, chunks } = await this.#drainBuffer(bridge, target.id, key, bytes, chunkBytes);
       const result = ok ? text : text.slice(LUAU_ERROR_PREFIX.length);
       return { studioName: target.name, ok, bytes, chunks, result };
     } finally {
-      await this.#releaseBuffer(bridge, studioId);
+      await this.#releaseBuffer(bridge, key, studioId);
     }
   }
 
@@ -294,6 +299,7 @@ export class RobloxService {
       throw new RobloxServiceError('Extraction is not wired up (the Studio bridge or the file writer is missing).');
     }
     const chunkBytes = options.chunkBytes ?? DEFAULT_CHUNK_BYTES;
+    const key = newBufferKey();
 
     let studioId: string | undefined;
     try {
@@ -303,7 +309,7 @@ export class RobloxService {
       const gameId = target.gameId;
 
       // ── 2. 一次算完，結果留在 Lua VM 記憶體 ──────────────────────────
-      const summaryRaw = await bridge.executeLuau(target.id, buildScriptStreamLuau());
+      const summaryRaw = await bridge.executeLuau(target.id, buildScriptStreamLuau(key));
       const summary = unwrapChunk(summaryRaw, 'build script stream');
       const totalBytes = Number.parseInt(/bytes=(\d+)/.exec(summary)?.[1] ?? '', 10);
       const scriptCount = Number.parseInt(/count=(\d+)/.exec(summary)?.[1] ?? '', 10);
@@ -315,6 +321,7 @@ export class RobloxService {
       const { text: stream, chunks } = await this.#drainBuffer(
         bridge,
         target.id,
+        key,
         totalBytes,
         chunkBytes,
       );
@@ -323,11 +330,14 @@ export class RobloxService {
       const files: readonly ExtractedFile[] = parseScriptStream(stream);
 
       // ── 5. 落檔 ────────────────────────────────────────────────────
+      // 名稱表先整份排好再寫：清理後同名、只差大小寫、兄弟同名都會互相覆蓋。
+      // scripts.json 記的就是這張表，也就是實際寫入的路徑。
+      const paths = planScriptPaths(files);
       const written: string[] = [];
       const index: { path: string; className: string; file: string; bytes: number }[] = [];
-      for (const file of files) {
-        const dir = file.path.slice(0, file.path.lastIndexOf('/'));
-        const relative = `src/${dir}/${fileNameFor(file.path, file.className)}`;
+      for (const [i, file] of files.entries()) {
+        const relative = paths[i];
+        if (relative === undefined) throw new ExtractionError(`No output path was planned for ${file.path}.`);
         written.push(await writeFile(options.outDir, relative, file.source));
         index.push({
           path: file.path,
@@ -359,7 +369,7 @@ export class RobloxService {
       };
     } finally {
       // buffer 是 Lua VM 的執行期記憶體，不清會一直佔著。
-      await this.#releaseBuffer(bridge, studioId);
+      await this.#releaseBuffer(bridge, key, studioId);
     }
   }
 
@@ -567,18 +577,37 @@ export class RobloxService {
         'ROBLOX_UPLOAD_ROOT is not set, so every upload is refused. Specify the allowed source folders first.',
       );
     }
-    const allowed = this.#roots.some((root) => {
-      const rel = relative(root, target);
-      return rel === '' || (!rel.startsWith('..') && !resolve(rel).startsWith('..'));
+    const notInside = (shown: string): RobloxServiceError => new RobloxServiceError(
+      `Source file is not inside an allowed folder: ${shown}\nAllowed root folders: ${this.#roots.join(', ')}`,
+    );
+
+    // 🔴 兩邊都要 realpath 才比：允許目錄裡的 symlink／junction 可以指到任何地方，
+    // 只比字面路徑等於讓連結把整台機器的檔案都送出去。
+    let real: string;
+    try {
+      real = realpathSync.native(target);
+    } catch {
+      // 只有字面上在允許目錄內才說「不存在」；目錄外一律說不在允許目錄內，
+      // 不替呼叫端探測外面有哪些檔案。
+      if (this.#roots.some((root) => isPathInside(root, target))) {
+        throw new RobloxServiceError(`Source file does not exist: ${target}`);
+      }
+      throw notInside(target);
+    }
+    const realRoots = this.#roots.flatMap((root) => {
+      try {
+        return [realpathSync.native(root)];
+      } catch {
+        return []; // 不存在的允許目錄裡不可能有檔案。
+      }
     });
-    if (!allowed) {
-      throw new RobloxServiceError(
-        `Source file is not inside an allowed folder: ${target}\nAllowed root folders: ${this.#roots.join(', ')}`,
-      );
+    if (!realRoots.some((root) => isPathInside(root, real))) {
+      throw notInside(real === target ? target : `${target} (resolves to ${real})`);
     }
-    if (!existsSync(target)) {
-      throw new RobloxServiceError(`Source file does not exist: ${target}`);
+    if (!statSync(real).isFile()) {
+      throw new RobloxServiceError(`Source file is not a regular file: ${target}`);
     }
-    return target;
+    // 回傳解析後的路徑：之後讀檔的就是剛剛驗過的那一個，不再經過連結。
+    return real;
   }
 }
