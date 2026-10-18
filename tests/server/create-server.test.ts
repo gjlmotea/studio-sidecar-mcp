@@ -16,6 +16,16 @@ async function connect(): Promise<Client> {
   return client;
 }
 
+describe('server instructions', () => {
+  it('照實描述 Luau 的錯誤處理：錯誤之後的程式不會執行，也不回復先前的修改', async () => {
+    const client = await connect();
+    const instructions = client.getInstructions() ?? '';
+    expect(instructions).not.toContain('without one protected property aborting the whole chunk');
+    expect(instructions).toContain('stops the rest of the chunk');
+    expect(instructions).toContain('not rolled back');
+  });
+});
+
 describe('tools/call 引數的元素上限', () => {
   it('一般呼叫不受影響', async () => {
     const client = await connect();
