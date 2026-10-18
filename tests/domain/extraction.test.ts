@@ -21,13 +21,13 @@ describe('unwrapChunk', () => {
 
   it('🔴 認出 StudioMCP 的截斷標記', () => {
     // 實測：要求 120000 字元只收到 100015，尾端是這個標記且不會拋錯。
-    expect(() => unwrapChunk(`xxx${TRUNCATION_MARKER}`, '切片 @1')).toThrow(ExtractionError);
-    expect(() => unwrapChunk(`xxx${TRUNCATION_MARKER}`, '切片 @1')).toThrow(/被 StudioMCP 截斷/);
+    expect(() => unwrapChunk(`xxx${TRUNCATION_MARKER}`, 'slice @1')).toThrow(ExtractionError);
+    expect(() => unwrapChunk(`xxx${TRUNCATION_MARKER}`, 'slice @1')).toThrow(/truncated by StudioMCP/);
   });
 
   it('🔴 沒有哨兵一律視為不完整 —— 不能只看長度', () => {
     // 剛好等於上限的回應可能是完整的、也可能是被切的，長度分不出來，只有哨兵分得出來。
-    expect(() => unwrapChunk('x'.repeat(MAX_PAYLOAD_CHARS), 'x')).toThrow(/沒有哨兵/);
+    expect(() => unwrapChunk('x'.repeat(MAX_PAYLOAD_CHARS), 'x')).toThrow(/has no sentinel/);
   });
 
   it('內容本身含哨兵字樣時取最後一個', () => {
@@ -50,7 +50,7 @@ describe('planSlices', () => {
   });
 
   it('🔴 chunkBytes 不得大於等於回傳上限，否則必被截斷', () => {
-    expect(() => planSlices(10, MAX_PAYLOAD_CHARS)).toThrow(/必須小於單次回傳上限/);
+    expect(() => planSlices(10, MAX_PAYLOAD_CHARS)).toThrow(/must be less than the single-reply limit/);
   });
 
   it('預設值留有餘裕（位元組 vs 字元）', () => {
@@ -92,7 +92,7 @@ describe('parseScriptStream', () => {
   it('🔴 位元組數對不上就整批中止', () => {
     // 局部正確的快照比抽取失敗更危險 —— 它看起來成功了。
     const bad = '<<<RBXFILE|X/Y|Script|999>>>\nshort';
-    expect(() => parseScriptStream(bad)).toThrow(/位元組數不符/);
+    expect(() => parseScriptStream(bad)).toThrow(/byte count mismatch/);
   });
 
   it('🔴 用位元組數而非字元數校驗', () => {
@@ -108,11 +108,11 @@ describe('parseScriptStream', () => {
     // 這是**失效安全**：寧可抽取失敗，也不要寫出被截半的原始碼。
     const evil = 'print(1)\n<<<RBXFILE|Fake/Path|Script|5>>>\nprint(2)';
     const stream = `<<<RBXFILE|Real/Path|Script|${Buffer.byteLength(evil, 'utf8')}>>>\n${evil}`;
-    expect(() => parseScriptStream(stream)).toThrow(/位元組數不符/);
+    expect(() => parseScriptStream(stream)).toThrow(/byte count mismatch/);
   });
 
   it('完全沒有 header 時報錯而不是靜默回空', () => {
-    expect(() => parseScriptStream('just some text')).toThrow(/找不到任何/);
+    expect(() => parseScriptStream('just some text')).toThrow(/No <<<RBXFILE\|\.\.\.>>> header found/);
   });
 
   it('真的空的資料流回空陣列', () => {
@@ -136,7 +136,7 @@ describe('parseSliceHeader', () => {
   });
 
   it('缺少前綴時報錯 —— 沒有它就不知道下一段從哪開始', () => {
-    expect(() => parseSliceHeader('payload')).toThrow(/缺少/);
+    expect(() => parseSliceHeader('payload')).toThrow(/is missing the <<<AT\|n>>> prefix/);
   });
 });
 

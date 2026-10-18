@@ -63,7 +63,7 @@ export class LocalStudioHost implements StudioHost {
     const images = IMAGE_NAMES[inspector.platform];
     if (images === undefined) {
       throw new StudioHostError(
-        `Roblox Studio 不支援 ${inspector.platform}；本 server 只實作了 win32 與 darwin。`,
+        `Roblox Studio does not support ${inspector.platform}; this server only implements win32 and darwin.`,
       );
     }
     this.#images = images;
@@ -119,7 +119,7 @@ export class LocalStudioHost implements StudioHost {
     const executable = this.executablePath;
     if (executable === undefined) {
       throw new StudioHostError(
-        '找不到 Roblox Studio 執行檔；請確認已安裝，或以 ROBLOX_STUDIO_PATH 指定路徑。',
+        'Roblox Studio executable not found; make sure it is installed, or set its path with ROBLOX_STUDIO_PATH.',
       );
     }
     // detached + unref：Studio 是長壽的 GUI 行程，不能綁在本 server 的生命週期上。
@@ -128,7 +128,7 @@ export class LocalStudioHost implements StudioHost {
     const child = spawn(executable, [...args], { detached: true, stdio: 'ignore', windowsHide: false });
     child.unref();
     const pid = child.pid;
-    if (pid === undefined) throw new StudioHostError('Studio 已啟動但取不到 pid。');
+    if (pid === undefined) throw new StudioHostError('Studio was started but its pid could not be obtained.');
     return pid;
   }
 

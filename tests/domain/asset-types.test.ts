@@ -49,7 +49,7 @@ describe('resolveUpload', () => {
 describe('assertArchivable', () => {
   it('Model 從未支援封存，先擋下來而不是讓呼叫端重試', () => {
     expect(() => assertArchivable('Model')).toThrow(AssetTypeError);
-    expect(() => assertArchivable('Model')).toThrow(/不是可封存的型別/);
+    expect(() => assertArchivable('Model')).toThrow(/is not an archivable asset type/);
   });
 
   it('Audio 可以封存', () => {

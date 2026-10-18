@@ -43,7 +43,7 @@ export function classifyUpdate(
     return {
       ...base,
       verdict: 'indeterminate',
-      message: '拿不到前後的 revisionId，無法確認更新是否生效；請自行以 roblox_get_asset 複查。',
+      message: 'Could not get the revisionId from before and after the update, so whether it took effect cannot be confirmed; check it yourself with roblox_get_asset.',
     };
   }
 
@@ -51,7 +51,7 @@ export function classifyUpdate(
     return {
       ...base,
       verdict: 'updated',
-      message: `內容已更新：revisionId ${before} → ${after}。`,
+      message: `Content updated: revisionId ${before} → ${after}.`,
     };
   }
 
@@ -59,8 +59,8 @@ export function classifyUpdate(
     ...base,
     verdict: 'deduplicated',
     message:
-      `revisionId 仍為 ${after}，內容沒有變更。`
-      + 'Open Cloud 對位元組相同的檔案會跳過建立新版本，並且不回報錯誤 —— '
-      + '這不是失敗，但也不是更新。要真的換版請確認來源檔確實改過。',
+      `revisionId is still ${after}; the content did not change. `
+      + 'For a byte-identical file, Open Cloud skips creating a new version and reports no error. '
+      + 'This is not a failure, but it is not an update either. To really publish a new version, make sure the source file actually changed.',
   };
 }

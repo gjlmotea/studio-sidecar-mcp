@@ -24,12 +24,12 @@ try {
 	).studios;
 	const studioId = studios?.[0]?.id;
 	if (!studioId) {
-		console.log('沒有連線中的 Studio，無法探測。');
+		console.log('No Studio is connected; nothing to probe.');
 		process.exit(1);
 	}
-	console.log(`目標：${studios[0].name}\n`);
-	console.log('要求長度   實收字元   收到哨兵   判定');
-	console.log('--------   --------   --------   ----');
+	console.log(`Target: ${studios[0].name}\n`);
+	console.log(' Request   Received   Sentinel   Verdict');
+	console.log('--------   --------   --------   -------');
 
 	for (const size of SIZES) {
 		// 產生剛好 size 個字元的 payload，尾端接哨兵。哨兵在＝沒被截斷。
@@ -47,13 +47,13 @@ try {
 			continue;
 		}
 		const hasSentinel = text.includes(SENTINEL);
-		const verdict = hasSentinel ? '完整' : '🔴 被截斷';
+		const verdict = hasSentinel ? 'complete' : '🔴 truncated';
 		console.log(
 			`${String(size).padStart(8)}   ${String(text.length).padStart(8)}   `
 			+ `${(hasSentinel ? 'YES' : 'no').padStart(8)}   ${verdict}`,
 		);
 		if (!hasSentinel) {
-			console.log(`\n           尾端 60 字元：${JSON.stringify(text.slice(-60))}`);
+			console.log(`\n           last 60 characters: ${JSON.stringify(text.slice(-60))}`);
 			break;
 		}
 	}

@@ -48,34 +48,34 @@ try {
     'roblox_update_asset',
     'roblox_upload_asset',
   ];
-  assert.deepEqual(names, expected, `工具面不符：${names.join(', ')}`);
+  assert.deepEqual(names, expected, `unexpected tool surface: ${names.join(', ')}`);
 
   // 每個工具都要有描述，否則呼叫端無從判斷該不該用。
   for (const tool of tools) {
     assert.ok(
       typeof tool.description === 'string' && tool.description.length > 0,
-      `${tool.name} 缺少描述`,
+      `${tool.name} has no description`,
     );
   }
 
   const status = await client.callTool({ name: 'roblox_get_status', arguments: {} });
-  assert.equal(status.isError ?? false, false, '狀態工具不該回錯');
-  assert.equal(status.structuredContent.openCloudConfigured, false, '沒給金鑰時應回報未設定');
-  assert.deepEqual(status.structuredContent.allowedUploadRoots, [], '沒給上傳目錄時應為空');
+  assert.equal(status.isError ?? false, false, 'the status tool should not return an error');
+  assert.equal(status.structuredContent.openCloudConfigured, false, 'should report not configured when no key is given');
+  assert.deepEqual(status.structuredContent.allowedUploadRoots, [], 'should be empty when no upload root is given');
 
   // 沒設定允許目錄時，上傳必須明確拒絕 —— 這是不可逆操作的護欄。
   const denied = await client.callTool({
     name: 'roblox_upload_asset',
     arguments: { filePath: 'anything.fbx', displayName: 'Probe' },
   });
-  assert.equal(denied.isError, true, '未設定上傳目錄時應拒絕');
+  assert.equal(denied.isError, true, 'should refuse when no upload root is set');
   assert.match(
     denied.content[0].text,
     /ROBLOX_UPLOAD_ROOT/,
-    '拒絕原因要指出缺少哪個設定',
+    'the refusal should name the missing setting',
   );
 
-  console.log(`stdio smoke 通過：${tools.length} 個工具，護欄與狀態回報正常。`);
+  console.log(`stdio smoke passed: ${tools.length} tools; the upload guard and status reporting work.`);
 } finally {
   await client.close();
 }

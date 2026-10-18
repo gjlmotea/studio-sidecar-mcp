@@ -160,7 +160,6 @@ Platform differences sit behind `ports/process-inspector.ts`; broker detection, 
 - **`roblox_luau_safe` is not a new way to run arbitrary code.** `execute_luau` is already in the client's hands; this tool adds a mandatory PlaceId guard, a whole-chunk `pcall` and chunked results in front of the same entry point. It is not a sandbox.
 - **No reverse engineering of the broker's private protocol on 13469.** Talking to `StudioMCP` as an ordinary MCP client makes that unnecessary.
 - **No "remove from inventory".** That goes through `inventory.roblox.com` with a signed-in session cookie and CSRF token, which an Open Cloud API key cannot do.
-- **Messages are in Traditional Chinese for now.** Tool descriptions, server instructions and error messages are written in Traditional Chinese. AI models read them without trouble; English messages are planned.
 
 ## Development
 

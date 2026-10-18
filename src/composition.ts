@@ -41,7 +41,7 @@ export async function writeIntoOutDir(
   const target = resolve(join(root, safe));
   const rel = relative(root, target);
   if (rel.startsWith('..')) {
-    throw new Error(`輸出路徑逃出目錄：${relativePath}`);
+    throw new Error(`Output path escapes the output folder: ${relativePath}`);
   }
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, content, 'utf8');
@@ -66,7 +66,7 @@ export function createProcessInspector(platform: NodeJS.Platform = process.platf
       return new DarwinProcessInspector();
     default:
       throw new StudioHostError(
-        `Roblox Studio 不支援 ${platform}；本 server 只實作了 Windows 與 macOS。`,
+        `Roblox Studio does not support ${platform}; this server only implements Windows and macOS.`,
       );
   }
 }

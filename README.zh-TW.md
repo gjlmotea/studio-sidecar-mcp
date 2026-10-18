@@ -346,6 +346,7 @@ Linux 一律明確拒絕而不是回空快照 —— Roblox Studio 根本不存�
   既然可以正大光明當 `StudioMCP.exe` 的 MCP client，就沒有必要去逆向它的內部通訊。
 - 不提供「從物品欄刪除」：那走 `inventory.roblox.com` 且需要登入 session cookie 與
   CSRF token，不是 Open Cloud API Key 能做的事。
+- 給 AI 看的文字（工具描述、server instructions、錯誤訊息）是英文；Studio 與 Open Cloud 回的原始內容照原樣轉交。
 
 ## 授權
 

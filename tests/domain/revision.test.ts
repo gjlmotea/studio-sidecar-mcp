@@ -14,7 +14,7 @@ describe('classifyUpdate', () => {
     // 但 revisionId 不動。只看回應會誤判成功 —— 這正是本判定存在的理由。
     const outcome = classifyUpdate('1', '1');
     expect(outcome.verdict).toBe('deduplicated');
-    expect(outcome.message).toContain('沒有變更');
+    expect(outcome.message).toContain('the content did not change');
   });
 
   it('revisionId 倒退也算沒有更新', () => {

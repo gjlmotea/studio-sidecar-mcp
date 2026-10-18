@@ -102,7 +102,7 @@ export class DarwinProcessInspector implements ProcessInspector {
         allowFailure: true,
         timeoutMs: 15_000,
       });
-      if (code !== 0) failures.push({ pid, reason: stderr.trim() || `kill 結束碼 ${code}` });
+      if (code !== 0) failures.push({ pid, reason: stderr.trim() || `kill exit code ${code}` });
     }
     return failures;
   }

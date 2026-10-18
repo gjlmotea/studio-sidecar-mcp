@@ -49,15 +49,15 @@ export class ExtractionError extends Error {
 export function unwrapChunk(text: string, context: string): string {
   if (text.endsWith(TRUNCATION_MARKER)) {
     throw new ExtractionError(
-      `${context}：回應被 StudioMCP 截斷（尾端是 ${TRUNCATION_MARKER}）。`
-      + `單次回傳上限 ${MAX_PAYLOAD_CHARS} 字元，請縮小 chunkBytes。`,
+      `${context}: the reply was truncated by StudioMCP (it ends with ${TRUNCATION_MARKER}). `
+      + `A single reply is capped at ${MAX_PAYLOAD_CHARS} characters; reduce chunkBytes.`,
     );
   }
   const index = text.lastIndexOf(SENTINEL);
   if (index === -1) {
     throw new ExtractionError(
-      `${context}：回應沒有哨兵，視為不完整。`
-      + `收到 ${text.length} 字元，尾端：${JSON.stringify(text.slice(-80))}`,
+      `${context}: the reply has no sentinel, so it is treated as incomplete. `
+      + `Received ${text.length} characters; tail: ${JSON.stringify(text.slice(-80))}`,
     );
   }
   return text.slice(0, index);
@@ -68,14 +68,14 @@ export type Slice = { readonly index: number; readonly start: number; readonly l
 /** 依總位元組數規劃切片。start 是 1-based，配合 Lua 的 `string.sub`。 */
 export function planSlices(totalBytes: number, chunkBytes: number = DEFAULT_CHUNK_BYTES): readonly Slice[] {
   if (!Number.isInteger(totalBytes) || totalBytes < 0) {
-    throw new ExtractionError(`totalBytes 必須是非負整數，收到 ${totalBytes}`);
+    throw new ExtractionError(`totalBytes must be a non-negative integer, got ${totalBytes}`);
   }
   if (!Number.isInteger(chunkBytes) || chunkBytes <= 0) {
-    throw new ExtractionError(`chunkBytes 必須是正整數，收到 ${chunkBytes}`);
+    throw new ExtractionError(`chunkBytes must be a positive integer, got ${chunkBytes}`);
   }
   if (chunkBytes >= MAX_PAYLOAD_CHARS) {
     throw new ExtractionError(
-      `chunkBytes（${chunkBytes}）必須小於單次回傳上限 ${MAX_PAYLOAD_CHARS}，否則必被截斷。`,
+      `chunkBytes (${chunkBytes}) must be less than the single-reply limit of ${MAX_PAYLOAD_CHARS}, or it is bound to be truncated.`,
     );
   }
   const slices: Slice[] = [];
@@ -123,8 +123,8 @@ export function parseScriptStream(stream: string): readonly ExtractedFile[] {
     const actual = Buffer.byteLength(source, 'utf8');
     if (actual !== current.declaredBytes) {
       throw new ExtractionError(
-        `${current.path}：位元組數不符 —— header 宣告 ${current.declaredBytes}，實得 ${actual}。`
-        + '整批中止：局部正確的抽取比失敗更危險。',
+        `${current.path}: byte count mismatch: the header declared ${current.declaredBytes}, got ${actual}. `
+        + 'Aborting the whole batch: a partially correct extraction is more dangerous than a failed one.',
       );
     }
     files.push({ ...current, source });
@@ -149,7 +149,7 @@ export function parseScriptStream(stream: string): readonly ExtractedFile[] {
   flush();
 
   if (files.length === 0) {
-    throw new ExtractionError('資料流裡找不到任何 <<<RBXFILE|…>>> header，格式不符。');
+    throw new ExtractionError('No <<<RBXFILE|...>>> header found in the stream; the format does not match.');
   }
   return files;
 }

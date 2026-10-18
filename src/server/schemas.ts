@@ -10,7 +10,7 @@ const assetType = z.enum(['Model', 'Decal', 'Audio']);
 
 const idString = z
   .string()
-  .regex(/^[0-9]+$/, '必須是十進位數字字串');
+  .regex(/^[0-9]+$/, 'must be a decimal digit string');
 
 const assetRecord = z.object({
   assetId: z.string(),
@@ -63,9 +63,9 @@ export const listStudiosOutputSchema = {
 };
 
 export const openPlaceInputSchema = {
-  placeId: idString.describe('目標 place 的 placeId，取自該專案 scene/place.json。'),
+  placeId: idString.describe('placeId of the target place, taken from the project\'s scene/place.json.'),
   universeId: idString.describe(
-    'universe id，就是 scene/place.json 裡的 gameId（Roblox 在啟動參數裡叫它 universeid）。',
+    'Universe id: the gameId in scene/place.json (Roblox calls it universeid in the launch arguments).',
   ),
   waitMs: z
     .number()
@@ -73,17 +73,17 @@ export const openPlaceInputSchema = {
     .min(5_000)
     .max(600_000)
     .optional()
-    .describe('等待新實例註冊到 broker 的上限，預設 180000。冷啟動加大型 place 下載會很久。'),
+    .describe('Maximum time to wait for the new instance to register with the broker; default 180000. A cold start plus downloading a large place can take a long time.'),
 };
 
 export const openPlaceOutputSchema = {
   pid: z.number(),
   connected: z
     .boolean()
-    .describe('true 代表已註冊到 broker，可以用內建 MCP 的 list_roblox_studios 取得 studio_id。'),
+    .describe('true means it is registered with the broker, and the built-in MCP\'s list_roblox_studios can be used to get the studio_id.'),
   waitedMs: z.number(),
   windowTitle: z.string().optional(),
-  commandLine: z.string().describe('實際下的命令列，供人工比對與排錯。'),
+  commandLine: z.string().describe('The command line actually used, for manual comparison and troubleshooting.'),
 };
 
 export const cleanupStubsInputSchema = {
@@ -92,16 +92,16 @@ export const cleanupStubsInputSchema = {
     .min(0)
     .max(720)
     .optional()
-    .describe('只清超過這個時數的 stub，預設 12。門檻是為了不去碰可能還活著的 session。'),
+    .describe('Only clean up stubs older than this many hours; default 12. The threshold keeps cleanup away from sessions that may still be alive.'),
   apply: z
     .boolean()
     .optional()
-    .describe('預設 false＝只報告不動手。要真的終止行程才設 true。'),
+    .describe('Default false = report only, change nothing. Set true only to actually terminate processes.'),
 };
 
 export const cleanupStubsOutputSchema = {
   dryRun: z.boolean(),
-  brokerPid: z.number().optional().describe('永遠不會被清除的那一隻。'),
+  brokerPid: z.number().optional().describe('The one process that is never cleaned up.'),
   planned: z.array(
     z.object({
       pid: z.number(),
@@ -122,11 +122,11 @@ export const getAssetInputSchema = {
 export const getAssetOutputSchema = { asset: assetRecord };
 
 export const uploadAssetInputSchema = {
-  filePath: z.string().describe('本機來源檔。必須位於 ROBLOX_UPLOAD_ROOT 允許的目錄內。'),
-  displayName: z.string().min(1).describe('資產名稱。中文會被文字過濾器換成 #，建議用 ASCII。'),
+  filePath: z.string().describe('Local source file. Must be inside a folder allowed by ROBLOX_UPLOAD_ROOT.'),
+  displayName: z.string().min(1).describe('Asset name. Chinese text is replaced with # by the text filter; ASCII is recommended.'),
   description: z.string().optional(),
-  assetType: assetType.optional().describe('省略時依副檔名推斷。Model 只吃 .fbx。'),
-  creatorUserId: idString.optional().describe('省略時用 ROBLOX_CREATOR_USER_ID。'),
+  assetType: assetType.optional().describe('Inferred from the file extension when omitted. Model accepts .fbx only.'),
+  creatorUserId: idString.optional().describe('Uses ROBLOX_CREATOR_USER_ID when omitted.'),
 };
 
 export const uploadAssetOutputSchema = {
@@ -135,8 +135,8 @@ export const uploadAssetOutputSchema = {
 };
 
 export const updateAssetInputSchema = {
-  assetId: idString.describe('要就地更新的既有資產。'),
-  filePath: z.string().describe('新內容的來源檔。必須位於 ROBLOX_UPLOAD_ROOT 允許的目錄內。'),
+  assetId: idString.describe('The existing asset to update in place.'),
+  filePath: z.string().describe('Source file for the new content. Must be inside a folder allowed by ROBLOX_UPLOAD_ROOT.'),
   assetType: assetType.optional(),
 };
 
@@ -145,8 +145,8 @@ export const updateAssetOutputSchema = {
   verdict: z
     .enum(['updated', 'deduplicated', 'indeterminate'])
     .describe(
-      'updated＝revisionId 遞增，內容確實換了；deduplicated＝內容相同，Roblox 靜默跳過建立新版本；'
-      + 'indeterminate＝拿不到 revisionId，需自行複查。',
+      'updated = revisionId increased, the content really changed; deduplicated = identical content, Roblox silently skipped creating a new version; '
+      + 'indeterminate = revisionId could not be obtained, check it yourself.',
     ),
   revisionBefore: z.string().optional(),
   revisionAfter: z.string().optional(),
@@ -157,16 +157,16 @@ export const updateAssetOutputSchema = {
 
 export const extractPlaceInputSchema = {
   placeId: idString.describe(
-    '目標 place 的 placeId。會逐一詢問連線中的 Studio，找不到相符的就中止 —— 抽錯 place 會寫出張冠李戴的快照。',
+    'placeId of the target place. Each connected Studio is asked in turn, and it aborts if none matches: extracting the wrong place would write a snapshot attributed to the wrong place.',
   ),
-  outDir: z.string().describe('輸出目錄。會寫出 src/**、scene/place.json、scene/scripts.json。'),
+  outDir: z.string().describe('Output folder. Writes src/**, scene/place.json and scene/scripts.json.'),
   chunkBytes: z
     .number()
     .int()
     .min(1_000)
     .max(99_000)
     .optional()
-    .describe('每次取回的位元組數，預設 70000。execute_luau 單次回傳上限是 100000 字元。'),
+    .describe('Bytes fetched per call; default 70000. A single execute_luau reply is capped at 100000 characters.'),
 };
 
 export const extractPlaceOutputSchema = {
@@ -180,31 +180,31 @@ export const extractPlaceOutputSchema = {
 };
 
 export const placeGuardInputSchema = {
-  placeId: idString.describe('期望的 placeId，取自該專案 scene/place.json。'),
+  placeId: idString.describe('The expected placeId, taken from the project\'s scene/place.json.'),
 };
 
 export const placeGuardOutputSchema = {
-  studioId: z.string().describe('相符的那個實例。把它帶進內建 MCP 的工具呼叫。'),
+  studioId: z.string().describe('The matching instance. Pass it to the built-in MCP\'s tool calls.'),
   studioName: z.string(),
   placeId: z.string(),
   gameId: z.string(),
 };
 
 export const luauSafeInputSchema = {
-  placeId: idString.describe('目標 place。對不上就中止，不會執行任何程式碼。'),
-  code: z.string().min(1).describe('要執行的 Luau。會被包在 pcall 裡，回傳值當作結果。'),
+  placeId: idString.describe('Target place. On a mismatch it aborts without running any code.'),
+  code: z.string().min(1).describe('Luau to run. It is wrapped in pcall, and its return value becomes the result.'),
   chunkBytes: z
     .number()
     .int()
     .min(1_000)
     .max(99_000)
     .optional()
-    .describe('分塊取回的位元組數，預設 70000。'),
+    .describe('Bytes per fetched chunk; default 70000.'),
 };
 
 export const luauSafeOutputSchema = {
   studioName: z.string(),
-  ok: z.boolean().describe('false 代表使用者程式碼拋錯，錯誤訊息在 result。'),
+  ok: z.boolean().describe('false means the user code threw an error; the error message is in result.'),
   bytes: z.number(),
   chunks: z.number(),
   result: z.string(),
@@ -212,7 +212,7 @@ export const luauSafeOutputSchema = {
 
 export const archiveAssetInputSchema = {
   assetId: idString,
-  restore: z.boolean().optional().describe('true＝還原，false／省略＝封存。'),
+  restore: z.boolean().optional().describe('true = restore; false or omitted = archive.'),
 };
 
 export const archiveAssetOutputSchema = { asset: assetRecord };

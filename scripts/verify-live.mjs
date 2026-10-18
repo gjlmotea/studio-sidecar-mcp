@@ -66,57 +66,57 @@ function check(label, fn) {
 }
 
 try {
-  console.log('狀態');
+  console.log('Status');
   const status = await client.callTool({ name: 'roblox_get_status', arguments: {} });
   const s = status.structuredContent;
-  console.log(`  Studio 執行檔：${s.studioExecutable ?? '（解析不到）'}`);
-  check('解析得到 Studio 執行檔', () => assert.ok(s.studioExecutable, '沒解析到'));
-  check('Open Cloud 金鑰就緒', () => assert.equal(s.openCloudConfigured, apiKey !== undefined));
+  console.log(`  Studio executable: ${s.studioExecutable ?? '(not resolved)'}`);
+  check('Studio executable resolves', () => assert.ok(s.studioExecutable, 'not resolved'));
+  check('Open Cloud key is ready', () => assert.equal(s.openCloudConfigured, apiKey !== undefined));
 
-  console.log('\n行程快照（唯讀）');
+  console.log('\nProcess snapshot (read-only)');
   const studios = await client.callTool({ name: 'roblox_list_studios', arguments: {} });
   if (studios.isError) {
-    console.log(`  ⚠ 跳過：${studios.content[0].text}`);
+    console.log(`  ⚠ Skipped: ${studios.content[0].text}`);
   } else {
     const snap = studios.structuredContent;
     const broker = snap.mcpProcesses.filter((row) => row.role === 'broker');
     const stubs = snap.mcpProcesses.filter((row) => row.role === 'stub');
-    console.log(`  Studio ${snap.studios.length} 個｜broker ${snap.brokerPid ?? '無'}｜stub ${stubs.length} 隻`);
-    for (const studio of snap.studios) console.log(`    pid ${studio.pid}  ${studio.windowTitle ?? '(無標題)'}`);
-    check('broker 唯一', () => assert.ok(broker.length <= 1, `找到 ${broker.length} 個 broker`));
-    check('broker 有被辨識出來', () => assert.ok(snap.brokerPid !== undefined, '沒找到 broker'));
+    console.log(`  Studio ${snap.studios.length} | broker ${snap.brokerPid ?? 'none'} | stubs ${stubs.length}`);
+    for (const studio of snap.studios) console.log(`    pid ${studio.pid}  ${studio.windowTitle ?? '(no title)'}`);
+    check('At most one broker', () => assert.ok(broker.length <= 1, `found ${broker.length} brokers`));
+    check('Broker is identified', () => assert.ok(snap.brokerPid !== undefined, 'no broker found'));
 
-    console.log('\n清理計畫（dry-run，不動手）');
+    console.log('\nCleanup plan (dry run, nothing is changed)');
     const plan = await client.callTool({
       name: 'roblox_cleanup_stubs',
       arguments: { olderThanHours: 6 },
     });
     const p = plan.structuredContent;
-    console.log(`  可清除 ${p.planned.length} 隻`);
-    check('預設就是 dry-run', () => assert.equal(p.dryRun, true));
-    check('沒有真的終止任何行程', () => assert.deepEqual(p.terminated, []));
-    check('🔴 broker 不在清除名單裡', () =>
-      assert.ok(!p.planned.some((row) => row.pid === p.brokerPid), 'broker 被列入清除名單'));
+    console.log(`  ${p.planned.length} can be cleaned up`);
+    check('Dry run is the default', () => assert.equal(p.dryRun, true));
+    check('No process was actually terminated', () => assert.deepEqual(p.terminated, []));
+    check('🔴 The broker is not on the cleanup list', () =>
+      assert.ok(!p.planned.some((row) => row.pid === p.brokerPid), 'the broker is on the cleanup list'));
   }
 
   if (apiKey !== undefined && assetId !== undefined) {
-    console.log('\nOpen Cloud（唯讀）');
+    console.log('\nOpen Cloud (read-only)');
     const asset = await client.callTool({ name: 'roblox_get_asset', arguments: { assetId } });
     if (asset.isError) {
       console.log(`  ⚠ ${asset.content[0].text}`);
       failures += 1;
     } else {
       const a = asset.structuredContent.asset;
-      console.log(`  ${a.displayName}｜${a.assetType}｜revision ${a.revisionId}｜${a.state}`);
-      check('取得 assetId', () => assert.equal(a.assetId, assetId));
-      check('回報真正的作者而不是持有者', () => assert.ok(a.creatorUserId, '沒有 creatorUserId'));
-      check('回報 revisionId（更新判定的唯一依據）', () => assert.ok(a.revisionId, '沒有 revisionId'));
+      console.log(`  ${a.displayName} | ${a.assetType} | revision ${a.revisionId} | ${a.state}`);
+      check('Gets the assetId', () => assert.equal(a.assetId, assetId));
+      check('Reports the real creator, not the holder', () => assert.ok(a.creatorUserId, 'no creatorUserId'));
+      check('Reports revisionId (the only basis for judging an update)', () => assert.ok(a.revisionId, 'no revisionId'));
     }
   } else {
-    console.log(`\nOpen Cloud：跳過（${apiKey === undefined ? '沒有 ROBLOX_API_KEY' : '沒指定 assetId'}）`);
+    console.log(`\nOpen Cloud: skipped (${apiKey === undefined ? 'no ROBLOX_API_KEY' : 'no assetId given'})`);
   }
 
-  console.log(failures === 0 ? '\n真機驗證通過。' : `\n真機驗證有 ${failures} 項未通過。`);
+  console.log(failures === 0 ? '\nLive verification passed.' : `\nLive verification: ${failures} check(s) failed.`);
 } finally {
   await client.close();
 }

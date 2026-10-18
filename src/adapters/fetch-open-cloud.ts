@@ -70,7 +70,7 @@ export class FetchOpenCloud implements OpenCloud {
   #key(): string {
     if (this.#apiKey === undefined || this.#apiKey === '') {
       throw new OpenCloudError(
-        '未設定 ROBLOX_API_KEY。需要 Creator Dashboard → Open Cloud API Keys 的 Asset read + write 權限。',
+        'ROBLOX_API_KEY is not set. It needs Asset read + write permission from Creator Dashboard → Open Cloud API Keys.',
       );
     }
     return this.#apiKey;
@@ -86,14 +86,14 @@ export class FetchOpenCloud implements OpenCloud {
     try {
       parsed = text === '' ? {} : JSON.parse(text);
     } catch {
-      throw new OpenCloudError(`回應不是 JSON（HTTP ${response.status}）：${text.slice(0, 200)}`, {
+      throw new OpenCloudError(`Response is not JSON (HTTP ${response.status}): ${text.slice(0, 200)}`, {
         status: response.status,
       });
     }
     if (!response.ok) {
       const body = parsed as { code?: string; message?: string; errors?: unknown };
       const detail = body.message ?? JSON.stringify(body.errors ?? body).slice(0, 300);
-      throw new OpenCloudError(`Open Cloud ${response.status}：${detail}`, {
+      throw new OpenCloudError(`Open Cloud ${response.status}: ${detail}`, {
         status: response.status,
         ...(body.code === undefined ? {} : { code: body.code }),
       });
@@ -105,7 +105,7 @@ export class FetchOpenCloud implements OpenCloud {
   async #await(operation: RawOperation): Promise<AssetRecord> {
     if (operation.done === true) return this.#unwrap(operation);
     const id = operation.operationId;
-    if (id === undefined) throw new OpenCloudError('Open Cloud 沒有回 operationId，無法追蹤作業。');
+    if (id === undefined) throw new OpenCloudError('Open Cloud returned no operationId, so the operation cannot be tracked.');
 
     const deadline = Date.now() + this.#timeoutMs;
     for (;;) {
@@ -113,7 +113,7 @@ export class FetchOpenCloud implements OpenCloud {
       const next = (await this.#send(`/operations/${encodeURIComponent(id)}`, { method: 'GET' })) as RawOperation;
       if (next.done === true) return this.#unwrap(next);
       if (Date.now() >= deadline) {
-        throw new OpenCloudError(`作業 ${id} 在 ${this.#timeoutMs}ms 內未完成；稍後可用同一個 operationId 複查。`);
+        throw new OpenCloudError(`Operation ${id} did not finish within ${this.#timeoutMs}ms; check it again later with the same operationId.`);
       }
     }
   }
@@ -121,12 +121,12 @@ export class FetchOpenCloud implements OpenCloud {
   #unwrap(operation: RawOperation): AssetRecord {
     if (operation.error !== undefined) {
       throw new OpenCloudError(
-        `作業失敗：${operation.error.message ?? '（無訊息）'}`,
+        `Operation failed: ${operation.error.message ?? '(no message)'}`,
         operation.error.code === undefined ? {} : { code: operation.error.code },
       );
     }
     if (operation.response === undefined) {
-      throw new OpenCloudError('作業已完成但沒有回傳資產內容。');
+      throw new OpenCloudError('The operation finished but returned no asset.');
     }
     return toRecord(operation.response);
   }
@@ -180,7 +180,7 @@ export class FetchOpenCloud implements OpenCloud {
       payload['description'] = request.description;
     }
     if (fields.length === 0) {
-      throw new OpenCloudError('displayName 與 description 至少要給一個。');
+      throw new OpenCloudError('Provide at least one of displayName and description.');
     }
     const form = new FormData();
     form.set('request', JSON.stringify(payload));

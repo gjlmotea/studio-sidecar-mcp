@@ -121,7 +121,7 @@ export class RobloxService {
 
   #requireBridge(): StudioBridge {
     const bridge = this.#bridge;
-    if (bridge === undefined) throw new RobloxServiceError('未組裝 Studio 橋，無法與 Studio 溝通。');
+    if (bridge === undefined) throw new RobloxServiceError('The Studio bridge is not wired up, so Studio cannot be reached.');
     return bridge;
   }
 
@@ -139,19 +139,19 @@ export class RobloxService {
     const studios = await bridge.listStudios();
     if (studios.length === 0) {
       throw new RobloxServiceError(
-        '沒有連線中的 Studio。請先開啟目標 place（可用 roblox_open_place）。',
+        'No Studio is connected. Open the target place first (you can use roblox_open_place).',
       );
     }
     for (const studio of studios) {
       const raw = await bridge.executeLuau(studio.id, placeGuardLuau(placeId));
-      const body = unwrapChunk(raw, `placeId 守衛（${studio.name}）`);
+      const body = unwrapChunk(raw, `placeId guard (${studio.name})`);
       if (/match=true/.test(body)) {
         return { ...studio, gameId: /gameId=(\d+)/.exec(body)?.[1] ?? '0' };
       }
     }
     throw new RobloxServiceError(
-      `連線中的 Studio 沒有一個是 placeId ${placeId}：${studios.map((s) => s.name).join('、')}。`
-      + '對不上就中止 —— 認錯 place 的後果是覆蓋別的遊戲，沒有復原鍵。',
+      `None of the connected Studios is placeId ${placeId}: ${studios.map((s) => s.name).join(', ')}. `
+      + 'Aborting on a mismatch: acting on the wrong place overwrites another game, with no undo.',
     );
   }
 
@@ -172,12 +172,12 @@ export class RobloxService {
     let chunks = 0;
     while (cursor <= totalBytes) {
       const raw = await bridge.executeLuau(studioId, sliceBufferLuau(cursor, chunkBytes));
-      const body = unwrapChunk(raw, `切片 @${cursor}`);
+      const body = unwrapChunk(raw, `slice @${cursor}`);
       const { endOffset, body: payload } = parseSliceHeader(body);
       if (endOffset < cursor) {
         throw new ExtractionError(
-          `切片沒有前進（cursor=${cursor} endOffset=${endOffset}）——`
-          + 'Lua 端的 buffer 可能已經不見了，中止以免無窮迴圈。',
+          `Slice did not advance (cursor=${cursor} endOffset=${endOffset}). `
+          + 'The Lua-side buffer may be gone; aborting to avoid an infinite loop.',
         );
       }
       parts.push(payload);
@@ -187,7 +187,7 @@ export class RobloxService {
     const text = parts.join('');
     const actual = Buffer.byteLength(text, 'utf8');
     if (actual !== totalBytes) {
-      throw new ExtractionError(`資料流總長度不符 —— Lua 宣告 ${totalBytes} 位元組，組裝後 ${actual}。`);
+      throw new ExtractionError(`Stream length mismatch: Lua declared ${totalBytes} bytes, but the assembled stream is ${actual}.`);
     }
     return { text, chunks };
   }
@@ -262,11 +262,11 @@ export class RobloxService {
       studioId = target.id;
 
       const summaryRaw = await bridge.executeLuau(target.id, runUserLuau(options.code));
-      const summary = unwrapChunk(summaryRaw, '執行 Luau');
+      const summary = unwrapChunk(summaryRaw, 'run Luau');
       const bytes = Number.parseInt(/bytes=(\d+)/.exec(summary)?.[1] ?? '', 10);
       const ok = /ok=true/.test(summary);
       if (!Number.isFinite(bytes)) {
-        throw new ExtractionError(`看不懂執行摘要：${JSON.stringify(summary.slice(0, 120))}`);
+        throw new ExtractionError(`Could not parse the run summary: ${JSON.stringify(summary.slice(0, 120))}`);
       }
 
       const { text, chunks } = await this.#drainBuffer(bridge, target.id, bytes, chunkBytes);
@@ -291,7 +291,7 @@ export class RobloxService {
     const bridge = this.#bridge;
     const writeFile = this.#writeFile;
     if (bridge === undefined || writeFile === undefined) {
-      throw new RobloxServiceError('抽取功能未組裝（缺少 Studio 橋或寫檔器）。');
+      throw new RobloxServiceError('Extraction is not wired up (the Studio bridge or the file writer is missing).');
     }
     const chunkBytes = options.chunkBytes ?? DEFAULT_CHUNK_BYTES;
 
@@ -304,11 +304,11 @@ export class RobloxService {
 
       // ── 2. 一次算完，結果留在 Lua VM 記憶體 ──────────────────────────
       const summaryRaw = await bridge.executeLuau(target.id, buildScriptStreamLuau());
-      const summary = unwrapChunk(summaryRaw, '建立腳本資料流');
+      const summary = unwrapChunk(summaryRaw, 'build script stream');
       const totalBytes = Number.parseInt(/bytes=(\d+)/.exec(summary)?.[1] ?? '', 10);
       const scriptCount = Number.parseInt(/count=(\d+)/.exec(summary)?.[1] ?? '', 10);
       if (!Number.isFinite(totalBytes) || !Number.isFinite(scriptCount)) {
-        throw new ExtractionError(`看不懂資料流摘要：${JSON.stringify(summary.slice(0, 120))}`);
+        throw new ExtractionError(`Could not parse the stream summary: ${JSON.stringify(summary.slice(0, 120))}`);
       }
 
       // ── 3. 分塊取回 ────────────────────────────────────────────────
@@ -338,13 +338,13 @@ export class RobloxService {
       }
 
       const metaRaw = await bridge.executeLuau(target.id, placeMetaLuau());
-      const meta = unwrapChunk(metaRaw, 'place 設定');
+      const meta = unwrapChunk(metaRaw, 'place settings');
       written.push(await writeFile(options.outDir, 'scene/place.json', `${meta}\n`));
       written.push(
         await writeFile(
           options.outDir,
           'scene/scripts.json',
-          `${JSON.stringify({ extractedBy: 'roblox-mcp extract_place（唯讀）', scriptCount, totalBytes, scripts: index }, null, 2)}\n`,
+          `${JSON.stringify({ extractedBy: 'roblox-mcp extract_place (read-only)', scriptCount, totalBytes, scripts: index }, null, 2)}\n`,
         ),
       );
 
@@ -449,7 +449,7 @@ export class RobloxService {
 
     if (snapshot.brokerPid === undefined) {
       throw new RobloxServiceError(
-        `在 port ${snapshot.brokerPort} 上找不到 broker；為避免誤殺，不做任何清除。`,
+        `No broker found on port ${snapshot.brokerPort}; to avoid killing the wrong process, nothing is cleaned up.`,
       );
     }
 
@@ -500,13 +500,13 @@ export class RobloxService {
     const assetType = options.assetType ?? inferAssetType(filePath);
     if (assetType === undefined) {
       throw new RobloxServiceError(
-        `無法從副檔名推斷資產型別：${options.filePath}。請明確指定 assetType。`,
+        `Cannot infer the asset type from the file extension: ${options.filePath}. Specify assetType explicitly.`,
       );
     }
     const creatorUserId = options.creatorUserId ?? this.#defaultCreator;
     if (creatorUserId === undefined) {
       throw new RobloxServiceError(
-        '缺少 creatorUserId，且未設定 ROBLOX_CREATOR_USER_ID。',
+        'creatorUserId is missing and ROBLOX_CREATOR_USER_ID is not set.',
       );
     }
     return await this.#openCloud.create({
@@ -532,7 +532,7 @@ export class RobloxService {
     const assetType = options.assetType ?? inferAssetType(filePath);
     if (assetType === undefined) {
       throw new RobloxServiceError(
-        `無法從副檔名推斷資產型別：${options.filePath}。請明確指定 assetType。`,
+        `Cannot infer the asset type from the file extension: ${options.filePath}. Specify assetType explicitly.`,
       );
     }
     const before = await this.#openCloud.get(options.assetId);
@@ -564,7 +564,7 @@ export class RobloxService {
     const target = resolve(filePath);
     if (this.#roots.length === 0) {
       throw new RobloxServiceError(
-        '未設定 ROBLOX_UPLOAD_ROOT，所有上傳一律拒絕。請先指定允許的來源目錄。',
+        'ROBLOX_UPLOAD_ROOT is not set, so every upload is refused. Specify the allowed source folders first.',
       );
     }
     const allowed = this.#roots.some((root) => {
@@ -573,11 +573,11 @@ export class RobloxService {
     });
     if (!allowed) {
       throw new RobloxServiceError(
-        `來源檔不在允許的目錄內：${target}\n允許的根目錄：${this.#roots.join(', ')}`,
+        `Source file is not inside an allowed folder: ${target}\nAllowed root folders: ${this.#roots.join(', ')}`,
       );
     }
     if (!existsSync(target)) {
-      throw new RobloxServiceError(`來源檔不存在：${target}`);
+      throw new RobloxServiceError(`Source file does not exist: ${target}`);
     }
     return target;
   }

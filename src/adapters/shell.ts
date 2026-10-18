@@ -26,7 +26,7 @@ export async function run(
     let stderr = '';
     const timer = setTimeout(() => {
       child.kill();
-      reject(new ProcessInspectorError(`${command} 逾時（${timeoutMs}ms）`));
+      reject(new ProcessInspectorError(`${command} timed out (${timeoutMs}ms)`));
     }, timeoutMs);
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -34,13 +34,13 @@ export async function run(
     child.stderr.on('data', (chunk: string) => { stderr += chunk; });
     child.on('error', (error) => {
       clearTimeout(timer);
-      reject(new ProcessInspectorError(`${command} 啟動失敗：${error.message}`));
+      reject(new ProcessInspectorError(`${command} failed to start: ${error.message}`));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
       // lsof 找不到符合條件的連線時回 1，那是正常結果不是錯誤。
       if (code === 0 || options.allowFailure === true) resolve({ code, stdout, stderr });
-      else reject(new ProcessInspectorError(`${command} 結束碼 ${code}：${stderr.trim() || '（無輸出）'}`));
+      else reject(new ProcessInspectorError(`${command} exited with code ${code}: ${stderr.trim() || '(no output)'}`));
     });
   });
 }

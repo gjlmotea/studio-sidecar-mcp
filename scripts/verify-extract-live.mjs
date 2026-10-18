@@ -26,7 +26,7 @@ const TARGET = {
 };
 const baselineArg = process.env.ROBLOX_VERIFY_BASELINE?.trim();
 if (!/^[0-9]+$/.test(TARGET.placeId) || !/^[0-9]+$/.test(TARGET.universeId) || !baselineArg) {
-	console.error('需要 ROBLOX_VERIFY_PLACE_ID、ROBLOX_VERIFY_UNIVERSE_ID（十進位數字）與 ROBLOX_VERIFY_BASELINE。');
+	console.error('Set ROBLOX_VERIFY_PLACE_ID and ROBLOX_VERIFY_UNIVERSE_ID (decimal numbers), and ROBLOX_VERIFY_BASELINE.');
 	process.exit(2);
 }
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -62,36 +62,36 @@ async function walk(dir, base = dir) {
 }
 
 try {
-	console.log('1. 確認目標 place 是否已連線');
+	console.log('1. Check whether the target place is connected');
 	// content[0].text 是給人看的摘要，結構化資料在 structuredContent。
 	const listed = (await client.callTool({ name: 'roblox_list_studios', arguments: {} }))
 		.structuredContent;
 	// 以 placeId 判定目標是否已開：macOS 讀不到視窗標題，不能靠名稱比對。
 	const probe = await client.callTool({ name: 'roblox_place_guard', arguments: { placeId: TARGET.placeId } });
 	const alreadyOpen = !probe.isError;
-	console.log(`   目前 Studio ${listed.studios.length} 個，目標 place ${alreadyOpen ? '已開' : '未開'}`);
+	console.log(`   Studio instances: ${listed.studios.length}; target place ${alreadyOpen ? 'is open' : 'is not open'}`);
 
 	if (!alreadyOpen) {
-		console.log('\n2. 開啟目標 place（roblox_open_place）');
+		console.log('\n2. Open the target place (roblox_open_place)');
 		const opened = await client.callTool({
 			name: 'roblox_open_place',
 			arguments: { ...TARGET, waitMs: 240_000 },
 		});
-		if (opened.isError) throw new Error(`open_place 失敗：${opened.content[0].text}`);
+		if (opened.isError) throw new Error(`open_place failed: ${opened.content[0].text}`);
 		const o = opened.structuredContent;
-		console.log(`   pid ${o.pid}｜connected=${o.connected}｜等待 ${Math.round(o.waitedMs / 1000)}s`);
-		check('已註冊到 broker', o.connected === true, o.windowTitle ?? '');
-		if (!o.connected) throw new Error('沒有註冊到 broker，無法繼續。');
+		console.log(`   pid ${o.pid} | connected=${o.connected} | waited ${Math.round(o.waitedMs / 1000)}s`);
+		check('Registered with the broker', o.connected === true, o.windowTitle ?? '');
+		if (!o.connected) throw new Error('Not registered with the broker; cannot continue.');
 	} else {
-		console.log('\n2. 略過開啟（已在線）');
+		console.log('\n2. Skipping open (already online)');
 	}
 
-	console.log('\n2b. placeId 守衛（roblox_place_guard）');
+	console.log('\n2b. placeId guard (roblox_place_guard)');
 	const guard = await client.callTool({
 		name: 'roblox_place_guard',
 		arguments: { placeId: TARGET.placeId },
 	});
-	check('認出目標 place', guard.isError !== true, guard.content?.[0]?.text);
+	check('Recognizes the target place', guard.isError !== true, guard.content?.[0]?.text);
 	if (guard.isError !== true) {
 		console.log(`   ${guard.structuredContent.studioName} → studio_id ${guard.structuredContent.studioId}`);
 	}
@@ -99,9 +99,9 @@ try {
 		name: 'roblox_place_guard',
 		arguments: { placeId: '999999999999' },
 	});
-	check('🔴 假的 placeId 一定要失敗', wrongGuard.isError === true);
+	check('🔴 A fake placeId must fail', wrongGuard.isError === true);
 
-	console.log('\n2c. 安全執行 Luau（roblox_luau_safe）');
+	console.log('\n2c. Safe Luau execution (roblox_luau_safe)');
 	const readOnly = await client.callTool({
 		name: 'roblox_luau_safe',
 		arguments: {
@@ -109,7 +109,7 @@ try {
 			code: 'return string.format("parts=%d", #game:GetService("Workspace"):GetDescendants())',
 		},
 	});
-	check('唯讀查詢可用', readOnly.isError !== true && readOnly.structuredContent?.ok === true,
+	check('Read-only query works', readOnly.isError !== true && readOnly.structuredContent?.ok === true,
 		readOnly.content?.[0]?.text);
 	if (readOnly.structuredContent?.ok) console.log(`   ${readOnly.structuredContent.result}`);
 
@@ -118,12 +118,12 @@ try {
 		name: 'roblox_luau_safe',
 		arguments: { placeId: TARGET.placeId, code: 'return tostring(game:GetService("Lighting").Technology)' },
 	});
-	check('受保護屬性不會讓整段中止',
+	check('A protected property does not abort the whole chunk',
 		protectedProp.isError !== true,
 		protectedProp.content?.[0]?.text);
 	if (protectedProp.isError !== true) {
 		const s = protectedProp.structuredContent;
-		console.log(`   ok=${s.ok}｜${String(s.result).slice(0, 90)}`);
+		console.log(`   ok=${s.ok} | ${String(s.result).slice(0, 90)}`);
 	}
 
 	// 🔴 關鍵案例：超過 100000 字元。內建版會靜默截斷，這裡應該完整取回。
@@ -132,34 +132,34 @@ try {
 		name: 'roblox_luau_safe',
 		arguments: { placeId: TARGET.placeId, code: `return string.rep("A", ${BIG})` },
 	});
-	check(`🔴 ${BIG} 字元完整取回（內建版會截在 100000）`,
+	check(`🔴 All ${BIG} characters come back (the built-in tool cuts off at 100000)`,
 		big.isError !== true && big.structuredContent?.result?.length === BIG,
-		`實得 ${big.structuredContent?.result?.length ?? 'ERR'}`);
+		`got ${big.structuredContent?.result?.length ?? 'ERR'}`);
 	if (big.structuredContent) {
-		console.log(`   ${big.structuredContent.bytes} 位元組｜${big.structuredContent.chunks} 塊`);
+		console.log(`   ${big.structuredContent.bytes} bytes | ${big.structuredContent.chunks} chunks`);
 	}
 
-	console.log('\n3. 抽取（roblox_extract_place）');
+	console.log('\n3. Extract (roblox_extract_place)');
 	const started = Date.now();
 	const res = await client.callTool({
 		name: 'roblox_extract_place',
 		arguments: { placeId: TARGET.placeId, outDir: workDir },
 	});
-	if (res.isError) throw new Error(`extract_place 失敗：${res.content[0].text}`);
+	if (res.isError) throw new Error(`extract_place failed: ${res.content[0].text}`);
 	const r = res.structuredContent;
-	console.log(`   ${r.scriptCount} 份腳本｜${r.totalBytes} 位元組｜${r.chunks} 塊｜`
+	console.log(`   ${r.scriptCount} scripts | ${r.totalBytes} bytes | ${r.chunks} chunks | `
 		+ `${Math.round((Date.now() - started) / 1000)}s`);
-	check('placeId 相符', r.placeId === TARGET.placeId);
-	check('有抽到腳本', r.scriptCount > 0);
-	check('分塊數合理', r.chunks >= 1 && r.chunks === Math.max(1, Math.ceil(r.totalBytes / 70000)),
+	check('placeId matches', r.placeId === TARGET.placeId);
+	check('Scripts were extracted', r.scriptCount > 0);
+	check('Chunk count is consistent', r.chunks >= 1 && r.chunks === Math.max(1, Math.ceil(r.totalBytes / 70000)),
 		`chunks=${r.chunks} totalBytes=${r.totalBytes}`);
 
-	console.log('\n4. 與人工快照逐位元組比對');
+	console.log('\n4. Byte-for-byte comparison with the hand-made snapshot');
 	let baseFiles;
 	try {
 		baseFiles = await walk(baseline);
 	} catch {
-		console.log('   ⚠ 找不到基準快照，略過比對');
+		console.log('   ⚠ Baseline snapshot not found; skipping the comparison');
 		baseFiles = undefined;
 	}
 
@@ -170,9 +170,9 @@ try {
 		const baseByName = byName(baseFiles);
 		const mineByName = byName(mineAll);
 
-		console.log(`   基準 ${baseFiles.length} 檔｜抽出 ${mineAll.length} 檔`);
+		console.log(`   baseline ${baseFiles.length} files | extracted ${mineAll.length} files`);
 		const missing = [...baseByName.keys()].filter((n) => !mineByName.has(n));
-		check('沒有漏掉基準裡的檔案', missing.length === 0, missing.join(', '));
+		check('No baseline file is missing', missing.length === 0, missing.join(', '));
 
 		let identical = 0;
 		const differing = [];
@@ -182,13 +182,13 @@ try {
 			const a = await readFile(join(baseline, basePath));
 			const b = await readFile(join(workDir, 'src', minePath));
 			if (a.equals(b)) identical += 1;
-			else differing.push(`${name}（基準 ${a.length}B vs 抽出 ${b.length}B）`);
+			else differing.push(`${name} (baseline ${a.length}B vs extracted ${b.length}B)`);
 		}
-		check(`內容逐位元組一致（${identical}/${baseByName.size}）`, differing.length === 0,
+		check(`Contents identical byte for byte (${identical}/${baseByName.size})`, differing.length === 0,
 			differing.slice(0, 5).join('\n      '));
 	}
 
-	console.log(`\n${failures === 0 ? '真機驗證通過。' : `有 ${failures} 項未通過。`}`);
+	console.log(`\n${failures === 0 ? 'Live verification passed.' : `${failures} check(s) failed.`}`);
 } finally {
 	await client.close();
 	await rm(workDir, { recursive: true, force: true });

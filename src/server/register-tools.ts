@@ -74,9 +74,9 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_get_status',
     {
-      title: '讀取 Roblox companion 狀態',
+      title: 'Read Roblox companion status',
       description:
-        '回報 Studio 執行檔解析結果、Open Cloud 金鑰是否就緒、允許的上傳目錄。動手之前先看這個。',
+        'Report the resolved Studio executable, whether the Open Cloud key is ready, and the folders uploads are allowed from. Check this before doing anything else.',
       inputSchema: getStatusInputSchema,
       outputSchema: statusOutputSchema,
       annotations: READ_ONLY,
@@ -86,9 +86,9 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
       return ok(
         { ...compact(status), allowedUploadRoots: status.allowedUploadRoots },
         [
-          `Studio 執行檔：${status.studioExecutable ?? '（解析不到）'}`,
-          `Open Cloud：${status.openCloudConfigured ? '已設定金鑰' : '未設定 ROBLOX_API_KEY'}`,
-          `允許上傳的目錄：${status.allowedUploadRoots.length === 0 ? '（未設定，上傳一律拒絕）' : status.allowedUploadRoots.join(', ')}`,
+          `Studio executable: ${status.studioExecutable ?? '(not resolved)'}`,
+          `Open Cloud: ${status.openCloudConfigured ? 'key configured' : 'ROBLOX_API_KEY not set'}`,
+          `Folders uploads are allowed from: ${status.allowedUploadRoots.length === 0 ? '(not set; every upload is refused)' : status.allowedUploadRoots.join(', ')}`,
         ].join('\n'),
       );
     },
@@ -98,10 +98,10 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_list_studios',
     {
-      title: '列出 Studio 與 StudioMCP 行程',
+      title: 'List Studio and StudioMCP processes',
       description:
-        '列出本機的 Roblox Studio 行程，以及 StudioMCP 的 broker 與 stub。'
-        + '這是內建 MCP 看不到的視角 —— 它活在某一個 Studio 行程裡面。',
+        'List the local Roblox Studio processes and the StudioMCP broker and stubs. '
+        + 'The built-in MCP cannot see this view: it lives inside one Studio process.',
       inputSchema: listStudiosInputSchema,
       outputSchema: listStudiosOutputSchema,
       annotations: READ_ONLY,
@@ -117,7 +117,7 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
             studios: snapshot.studios.map((row) => compact({ ...row })),
             mcpProcesses: snapshot.mcpProcesses.map((row) => ({ ...compact(row), role: row.role })),
           },
-          `Studio ${snapshot.studios.length} 個；StudioMCP broker ${snapshot.brokerPid ?? '（找不到）'}、stub ${stubs} 隻。`,
+          `Studio processes: ${snapshot.studios.length}; StudioMCP broker: ${snapshot.brokerPid ?? '(not found)'}; stubs: ${stubs}.`,
         );
       } catch (error) {
         return fail(message(error));
@@ -128,12 +128,12 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_open_place',
     {
-      title: '開啟指定的 place',
+      title: 'Open a given place',
       description:
-        '生一個新的 Studio 行程開啟指定 place，並等它註冊到 MCP broker。'
-        + '內建 MCP 結構上做不到這件事 —— 它活在某一個 Studio 行程裡面，沒辦法生兄弟行程。'
-        + '回報 connected=true 之後，用內建 MCP 的 list_roblox_studios 取得該實例的 studio_id。'
-        + '⚠ 本工具全程不碰視窗焦點：搶焦點會讓游離按鍵關掉剛載好的 place。',
+        'Start a new Studio process that opens the given place, and wait until it registers with the MCP broker. '
+        + 'The built-in MCP structurally cannot do this: it lives inside one Studio process and cannot spawn a sibling process. '
+        + 'After it reports connected=true, use the built-in MCP\'s list_roblox_studios to get that instance\'s studio_id. '
+        + 'Warning: this tool never touches window focus at any point; stealing focus can make a stray key press close the place that has just loaded.',
       inputSchema: openPlaceInputSchema,
       outputSchema: openPlaceOutputSchema,
       annotations: {
@@ -153,11 +153,11 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
           }) as { placeId: string; universeId: string; waitMs?: number },
         );
         const summary = result.connected
-          ? `已開啟並註冊（pid ${result.pid}，等待 ${Math.round(result.waitedMs / 1000)} 秒）。`
-            + '現在用內建 MCP 的 list_roblox_studios 取 studio_id。'
-          : `Studio 已啟動（pid ${result.pid}）但 ${Math.round(result.waitedMs / 1000)} 秒內沒有註冊到 broker。`
-            + `視窗標題「${result.windowTitle ?? '（讀不到）'}」—— 若標題沒有帶 place 名，`
-            + '代表啟動意圖沒被吃下去。';
+          ? `Opened and registered (pid ${result.pid}, waited ${Math.round(result.waitedMs / 1000)} s). `
+            + 'Now use the built-in MCP\'s list_roblox_studios to get the studio_id.'
+          : `Studio started (pid ${result.pid}) but did not register with the broker within ${Math.round(result.waitedMs / 1000)} s. `
+            + `Window title "${result.windowTitle ?? '(unreadable)'}": if the title does not include the place name, `
+            + 'the launch intent was not accepted.';
         return ok({ ...compact(result), commandLine: result.commandLine }, summary);
       } catch (error) {
         return fail(message(error));
@@ -168,11 +168,11 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_cleanup_stubs',
     {
-      title: '清理殘留的 StudioMCP stub',
+      title: 'Clean up leftover StudioMCP stubs',
       description:
-        'MCP 客戶端結束時不一定會回收自己的 StudioMCP stub，會日積月累。'
-        + '本工具永遠排除 broker（殺掉它會斷掉所有連線，包含 Studio 自己），'
-        + '且辨識不出 broker 時整個放棄。預設只報告，要真的清除必須明確帶 apply=true。',
+        'MCP clients do not always reap their own StudioMCP stubs when they exit, so stubs pile up over time. '
+        + 'This tool always excludes the broker (killing it drops every connection, Studio\'s own included), '
+        + 'and gives up entirely when it cannot identify the broker. By default it only reports; to actually clean up you must pass apply=true explicitly.',
       inputSchema: cleanupStubsInputSchema,
       outputSchema: cleanupStubsOutputSchema,
       annotations: {
@@ -188,8 +188,8 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
           compact({ olderThanHours: input.olderThanHours, apply: input.apply }),
         );
         const summary = result.dryRun
-          ? `可清除 ${result.planned.length} 隻（未動手；broker ${result.brokerPid} 已排除）。要執行請帶 apply=true。`
-          : `已終止 ${result.terminated.length} 隻，失敗 ${result.failures.length} 隻（broker ${result.brokerPid} 已排除）。`;
+          ? `${result.planned.length} stub(s) can be cleaned up (nothing done; broker ${result.brokerPid} excluded). Pass apply=true to do it.`
+          : `Terminated ${result.terminated.length} stub(s), ${result.failures.length} failed (broker ${result.brokerPid} excluded).`;
         return ok(
           {
             dryRun: result.dryRun,
@@ -210,12 +210,12 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_place_guard',
     {
-      title: '寫入前確認目標 place',
+      title: 'Confirm the target place before writing',
       description:
-        '逐一詢問連線中的 Studio，回報哪一個的 `game.PlaceId` 等於你要的值，並給出它的 studio_id。'
-        + '🔴 **任何寫入之前都該先跑這個。** 內建版的 multi_edit 是用路徑寫入的，'
-        + '傳錯 studio_id 會直接覆蓋另一個遊戲的原始碼、沒有復原鍵、而且沒有任何警告。'
-        + '⚠️ `game.Name` 不可信 —— 實測有已發佈的 place 開起來時它回的是 `Place1`，只有 placeId 分得出來。',
+        'Ask each connected Studio in turn, report which one has a `game.PlaceId` equal to the value you want, and give its studio_id. '
+        + 'IMPORTANT: **Run this before any write.** The built-in multi_edit writes by path; '
+        + 'a wrong studio_id overwrites another game\'s source code directly, with no undo and no warning of any kind. '
+        + 'Warning: `game.Name` is not reliable; in testing, a published place returned `Place1` when opened. Only placeId tells them apart.',
       inputSchema: placeGuardInputSchema,
       outputSchema: placeGuardOutputSchema,
       annotations: READ_ONLY,
@@ -225,8 +225,8 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
         const result = await service.guardPlace(input.placeId);
         return ok(
           { ...result },
-          `✅ ${result.studioName} 就是 placeId ${result.placeId}（gameId ${result.gameId}）。`
-          + `\n後續呼叫用 studio_id: ${result.studioId}`,
+          `Match: ${result.studioName} is placeId ${result.placeId} (gameId ${result.gameId}).`
+          + `\nstudio_id for subsequent calls: ${result.studioId}`,
         );
       } catch (error) {
         return fail(message(error));
@@ -237,14 +237,14 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_luau_safe',
     {
-      title: '在指定 place 執行 Luau，不截斷、不整段中止',
+      title: 'Run Luau in a given place without truncation or whole-chunk aborts',
       description:
-        '在 placeId 相符的 Studio 執行 Luau。相對於內建版的 execute_luau 多三道護欄：'
-        + '① **強制 placeId 守衛**，對不上就中止、不執行任何程式碼；'
-        + '② **整段包 pcall** —— execute_luau 沒有 RobloxScript capability，碰到受保護屬性'
-        + '（如 Lighting.Technology）會讓整段中止，包起來之後錯誤變成可讀的回傳值；'
-        + '③ **結果走 buffer 分塊取回**，不受 100000 字元上限限制，不會被靜默截斷。'
-        + '這不是新的執行入口 —— execute_luau 本來就在你手上，這裡加的只是護欄。',
+        'Run Luau in the Studio whose placeId matches. Compared with the built-in execute_luau, it adds three guard rails: '
+        + '(1) **a mandatory placeId guard**: on a mismatch it aborts without running any code; '
+        + '(2) **the whole chunk is wrapped in pcall**: execute_luau lacks the RobloxScript capability, so touching a protected property '
+        + '(such as Lighting.Technology) aborts the whole chunk; wrapped, the error becomes a readable return value; '
+        + '(3) **results are fetched from a buffer in chunks**, so they are not subject to the 100000-character limit and are never silently truncated. '
+        + 'This is not a new way to run code: execute_luau is already in your hands, and this tool only adds guard rails.',
       inputSchema: luauSafeInputSchema,
       outputSchema: luauSafeOutputSchema,
       annotations: {
@@ -264,8 +264,8 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
           }) as { placeId: string; code: string; chunkBytes?: number },
         );
         const head = result.ok
-          ? `在「${result.studioName}」執行成功（${result.bytes} 位元組，${result.chunks} 塊）。`
-          : `在「${result.studioName}」執行時拋錯：`;
+          ? `Ran successfully in "${result.studioName}" (${result.bytes} bytes, ${result.chunks} chunk(s)).`
+          : `The code threw an error while running in "${result.studioName}":`;
         return ok({ ...result }, `${head}\n${result.result}`);
       } catch (error) {
         return fail(message(error));
@@ -277,14 +277,14 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_extract_place',
     {
-      title: '把 place 抽成可 diff 的文字快照',
+      title: 'Extract a place into a diffable text snapshot',
       description:
-        '把 place 的所有腳本與 place 設定抽成純文字寫進輸出目錄（src/**、scene/place.json、scene/scripts.json）。'
-        + '**全程唯讀**，不對 DataModel 做任何寫入。'
-        + '本工具把「execute_luau 單次回傳上限 100000 字元、超過靜默截斷」的整套分塊／哨兵／'
-        + '逐檔位元組校驗機械包起來 —— 任一塊少了哨兵就整批中止，'
-        + '因為局部正確的快照比抽取失敗更危險（它看起來成功了）。'
-        + '會先逐一詢問連線中的 Studio 驗 placeId，對不上就中止。',
+        'Extract all of a place\'s scripts and its place settings as plain text into the output folder (src/**, scene/place.json, scene/scripts.json). '
+        + '**Read-only throughout**: it never writes to the DataModel. '
+        + 'This tool wraps up the whole chunking/sentinel/per-file byte-check machinery needed because a single execute_luau reply '
+        + 'is capped at 100000 characters and silently truncated beyond that. If any chunk is missing its sentinel, the whole batch aborts, '
+        + 'because a partially correct snapshot is more dangerous than a failed extraction (it looks like success). '
+        + 'It first asks each connected Studio in turn to verify the placeId, and aborts on a mismatch.',
       inputSchema: extractPlaceInputSchema,
       outputSchema: extractPlaceOutputSchema,
       annotations: {
@@ -305,9 +305,9 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
         );
         return ok(
           { ...result, written: [...result.written] },
-          `已從「${result.studioName}」抽出 ${result.scriptCount} 份腳本`
-          + `（${result.totalBytes} 位元組，分 ${result.chunks} 塊取回，逐檔位元組數校驗通過）。`
-          + `\n寫出 ${result.written.length} 個檔案到 ${input.outDir}。`,
+          `Extracted ${result.scriptCount} script(s) from "${result.studioName}"`
+          + ` (${result.totalBytes} bytes, fetched in ${result.chunks} chunk(s), per-file byte counts verified).`
+          + `\nWrote ${result.written.length} file(s) to ${input.outDir}.`,
         );
       } catch (error) {
         return fail(message(error));
@@ -319,11 +319,11 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_get_asset',
     {
-      title: '查資產狀態與真正的作者',
+      title: 'Read asset status and its real author',
       description:
-        '回傳 revisionId、moderationState、state 與 creatorUserId。'
-        + 'creatorUserId 是**作者**；內建 MCP 的 search_asset 回的 creatorId 是**持有者**，兩者不同 —— '
-        + '這是唯一能分辨「你上傳的」與「你從工具箱拿的」的方法。',
+        'Return revisionId, moderationState, state and creatorUserId. '
+        + 'creatorUserId is the **author**; the creatorId returned by the built-in MCP\'s search_asset is the **holder**, and the two differ. '
+        + 'This is the only way to tell "what you uploaded" from "what you took from the Toolbox".',
       inputSchema: getAssetInputSchema,
       outputSchema: getAssetOutputSchema,
       annotations: READ_ONLY,
@@ -333,8 +333,8 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
         const asset = await service.getAsset(input.assetId);
         return ok(
           { asset: compact({ ...asset }) },
-          `${asset.displayName ?? asset.assetId}｜${asset.assetType ?? '?'}｜revision ${asset.revisionId ?? '?'}`
-          + `｜${asset.moderationState ?? '?'}｜${asset.state ?? '?'}｜作者 ${asset.creatorUserId ?? '?'}`,
+          `${asset.displayName ?? asset.assetId} | ${asset.assetType ?? '?'} | revision ${asset.revisionId ?? '?'}`
+          + ` | ${asset.moderationState ?? '?'} | ${asset.state ?? '?'} | author ${asset.creatorUserId ?? '?'}`,
         );
       } catch (error) {
         return fail(message(error));
@@ -345,12 +345,12 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_upload_asset',
     {
-      title: '上傳本機檔案為新資產',
+      title: 'Upload a local file as a new asset',
       description:
-        '走 Open Cloud assets/v1 建立新資產（Model 只吃 .fbx，Decal 吃常見影像格式，Audio 吃 mp3/ogg）。'
-        + '🔴 上傳的 Model 在平台上無法刪除也無法封存，只能從自己的物品欄移除 —— '
-        + '所以迭代時請改用 roblox_update_asset 更新既有 assetId，不要每次都建立新的。'
-        + '來源檔必須位於 ROBLOX_UPLOAD_ROOT 允許的目錄內。',
+        'Create a new asset through Open Cloud assets/v1 (Model accepts .fbx only, Decal accepts common image formats, Audio accepts mp3/ogg). '
+        + 'IMPORTANT: An uploaded Model cannot be deleted or archived on the platform; it can only be removed from your own inventory. '
+        + 'So when iterating, use roblox_update_asset to update the existing assetId instead of creating a new asset each time. '
+        + 'The source file must be inside a folder allowed by ROBLOX_UPLOAD_ROOT.',
       inputSchema: uploadAssetInputSchema,
       outputSchema: uploadAssetOutputSchema,
       annotations: {
@@ -376,8 +376,8 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
           : ASSET_TYPE_RULES[asset.assetType as AssetType]?.caveat;
         return ok(
           { asset: compact({ ...asset }), ...compact({ warning: caveat }) },
-          `已建立 assetId ${asset.assetId}（${asset.moderationState ?? '?'}）。`
-          + `${caveat === undefined ? '' : `\n⚠ ${caveat}`}`,
+          `Created assetId ${asset.assetId} (${asset.moderationState ?? '?'}).`
+          + `${caveat === undefined ? '' : `\nWarning: ${caveat}`}`,
         );
       } catch (error) {
         return fail(message(error));
@@ -388,11 +388,11 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_update_asset',
     {
-      title: '就地更新既有資產的內容',
+      title: 'Update the content of an existing asset in place',
       description:
-        '對同一個 assetId 推新內容（這是「Package 而非 Model」策略的實作路徑）。'
-        + '🔴 內容位元組相同時 Open Cloud 會**靜默去重**：HTTP 200、作業完成、無錯誤，但 revisionId 不動。'
-        + '本工具會自動比對更新前後的 revisionId 並回報 verdict —— 不要拿 HTTP 狀態當成功判準。',
+        'Push new content to the same assetId (this is how the "Package rather than Model" strategy is implemented). '
+        + 'IMPORTANT: When the content bytes are identical, Open Cloud **silently deduplicates**: HTTP 200, operation done, no error, but revisionId does not move. '
+        + 'This tool automatically compares revisionId before and after the update and reports a verdict; do not use the HTTP status as the success criterion.',
       inputSchema: updateAssetInputSchema,
       outputSchema: updateAssetOutputSchema,
       annotations: {
@@ -432,10 +432,10 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_archive_asset',
     {
-      title: '封存或還原資產',
+      title: 'Archive or restore an asset',
       description:
-        '對**支援封存的型別**有效。Model 與 Decal 從未支援封存，本工具會先擋下來並說明原因，'
-        + '不會讓你對著必定失敗的請求重試。',
+        'Works only on **asset types that support archiving**. Model and Decal have never supported archiving; this tool blocks them up front and explains why, '
+        + 'so you do not keep retrying a request that is bound to fail.',
       inputSchema: archiveAssetInputSchema,
       outputSchema: archiveAssetOutputSchema,
       annotations: {
@@ -450,7 +450,7 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
         const asset = await service.archiveAsset(input.assetId, input.restore === true);
         return ok(
           { asset: compact({ ...asset }) },
-          `${input.restore === true ? '已還原' : '已封存'} ${asset.assetId}：state=${asset.state ?? '?'}`,
+          `${input.restore === true ? 'Restored' : 'Archived'} ${asset.assetId}: state=${asset.state ?? '?'}`,
         );
       } catch (error) {
         return fail(message(error));

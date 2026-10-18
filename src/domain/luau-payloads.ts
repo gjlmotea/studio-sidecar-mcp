@@ -165,7 +165,7 @@ return HttpService:JSONEncode(meta) .. "${SENTINEL}"`;
 export function parseSliceHeader(text: string): { readonly endOffset: number; readonly body: string } {
   const match = /^<<<AT\|(\d+)>>>/.exec(text);
   if (!match) {
-    throw new Error(`切片回應缺少 <<<AT|n>>> 前綴，收到：${JSON.stringify(text.slice(0, 60))}`);
+    throw new Error(`Slice reply is missing the <<<AT|n>>> prefix; got: ${JSON.stringify(text.slice(0, 60))}`);
   }
   const raw = match[1];
   return {

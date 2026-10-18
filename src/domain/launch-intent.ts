@@ -43,7 +43,7 @@ export function buildLaunchIntent(request: LaunchIntentRequest): string {
     ['universeId', request.universeId],
   ] as const) {
     if (!DIGITS.test(value)) {
-      throw new LaunchIntentError(`${label} 必須是十進位數字字串，收到：${JSON.stringify(value)}`);
+      throw new LaunchIntentError(`${label} must be a decimal digit string, got: ${JSON.stringify(value)}`);
     }
   }
 

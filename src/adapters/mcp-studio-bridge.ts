@@ -52,10 +52,10 @@ export function resolveBridgeCommand(
 function firstText(result: ToolResult, context: string): string {
   const text = result.content?.find((part) => part.type === 'text')?.text;
   if (typeof text !== 'string') {
-    throw new StudioBridgeError(`${context}：回應沒有文字內容。`);
+    throw new StudioBridgeError(`${context}: the response has no text content.`);
   }
   if (result.isError === true) {
-    throw new StudioBridgeError(`${context}：${text}`);
+    throw new StudioBridgeError(`${context}: ${text}`);
   }
   return text;
 }
@@ -85,8 +85,8 @@ export class McpStudioBridge implements StudioBridge {
     const launch = this.#override ?? resolveBridgeCommand();
     if (launch === undefined) {
       throw new StudioBridgeError(
-        '找不到 StudioMCP 執行檔；請確認 Roblox Studio 已安裝。'
-        + '（Windows 找 %LOCALAPPDATA%\\Roblox\\mcp.bat，macOS 找 RobloxStudio.app 內的 StudioMCP。）',
+        'StudioMCP executable not found; make sure Roblox Studio is installed. '
+        + '(On Windows it looks for %LOCALAPPDATA%\\Roblox\\mcp.bat; on macOS, for StudioMCP inside RobloxStudio.app.)',
       );
     }
     const transport = new StdioClientTransport({
@@ -142,7 +142,7 @@ export class McpStudioBridge implements StudioBridge {
     try {
       parsed = JSON.parse(text) as { studios?: readonly ConnectedStudio[] };
     } catch {
-      throw new StudioBridgeError(`list_roblox_studios 回應不是 JSON：${text.slice(0, 120)}`);
+      throw new StudioBridgeError(`list_roblox_studios response is not JSON: ${text.slice(0, 120)}`);
     }
     return parsed.studios ?? [];
   }

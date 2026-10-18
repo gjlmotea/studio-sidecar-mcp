@@ -30,8 +30,8 @@ export const ASSET_TYPE_RULES: Readonly<Record<AssetType, AssetTypeRule>> = {
     archivable: false,
     contentUpdatable: true,
     caveat:
-      'Model 只吃 .fbx。上傳後無法封存也無法從平台刪除（只能從自己的物品欄移除），'
-      + '所以請更新既有 assetId 而不是每次建立新的。',
+      'Model accepts .fbx only. After upload it cannot be archived or deleted from the platform (it can only be removed from your own inventory), '
+      + 'so update the existing assetId instead of creating a new asset each time.',
   },
   Decal: {
     extensions: ['.bmp', '.jpeg', '.jpg', '.png', '.tga'],
@@ -46,7 +46,7 @@ export const ASSET_TYPE_RULES: Readonly<Record<AssetType, AssetTypeRule>> = {
     // 官方文件明列 Audio「not available for updating」。
     contentUpdatable: false,
     caveat:
-      'Audio 有配額：長度上限 7 分鐘，ID 驗證帳號每月 100 次、未驗證每月 10 次，且只能新建不能更新。',
+      'Audio has quotas: a maximum length of 7 minutes, 100 uploads per month for ID-verified accounts and 10 per month for unverified ones, and it can only be created, not updated.',
   },
 };
 
@@ -74,7 +74,7 @@ export function resolveUpload(assetType: AssetType, filePath: string): { readonl
   const extension = extensionOf(filePath);
   if (!rule.extensions.includes(extension)) {
     throw new AssetTypeError(
-      `${assetType} 只接受 ${rule.extensions.join(' / ')}，收到 ${extension === '' ? '（無副檔名）' : extension}。`,
+      `${assetType} only accepts ${rule.extensions.join(' / ')}, got ${extension === '' ? '(no extension)' : extension}.`,
     );
   }
   // Decal 涵蓋數種影像格式，Content-Type 要跟著副檔名走。
@@ -98,8 +98,8 @@ export function resolveUpload(assetType: AssetType, filePath: string): { readonl
 export function assertArchivable(assetType: AssetType): void {
   if (!ASSET_TYPE_RULES[assetType].archivable) {
     throw new AssetTypeError(
-      `${assetType} 不是可封存的型別，Open Cloud 會回 INVALID_ARGUMENT。`
-      + '（Model 可以從物品欄移除，但那走 inventory 端點且需要登入 session，不在本 server 範圍。）',
+      `${assetType} is not an archivable asset type; Open Cloud returns INVALID_ARGUMENT. `
+      + '(A Model can be removed from your inventory, but that goes through the inventory endpoint and needs a signed-in session, which is outside this server\'s scope.)',
     );
   }
 }

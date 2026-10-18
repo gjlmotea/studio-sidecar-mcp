@@ -240,14 +240,14 @@ describe('uploadAsset', () => {
   it('未設定允許目錄時一律拒絕', async () => {
     const service = await makeService([]);
     await expect(service.uploadAsset({ filePath: fbxPath, displayName: 'X' })).rejects.toThrow(
-      /未設定 ROBLOX_UPLOAD_ROOT/,
+      /ROBLOX_UPLOAD_ROOT is not set/,
     );
   });
 
   it('拒絕允許目錄外的路徑 —— MCP Client 不該能指定任意檔案', async () => {
     const service = await makeService([join(workDir, 'allowed')]);
     await expect(service.uploadAsset({ filePath: fbxPath, displayName: 'X' })).rejects.toThrow(
-      /不在允許的目錄內/,
+      /is not inside an allowed folder/,
     );
   });
 
@@ -255,14 +255,14 @@ describe('uploadAsset', () => {
     const service = await makeService([join(workDir, 'allowed')]);
     await expect(
       service.uploadAsset({ filePath: join(workDir, 'allowed', '..', 'cube.fbx'), displayName: 'X' }),
-    ).rejects.toThrow(/不在允許的目錄內/);
+    ).rejects.toThrow(/is not inside an allowed folder/);
   });
 
   it('來源檔不存在時明確報錯', async () => {
     const service = await makeService([workDir]);
     await expect(
       service.uploadAsset({ filePath: join(workDir, 'missing.fbx'), displayName: 'X' }),
-    ).rejects.toThrow(/不存在/);
+    ).rejects.toThrow(/Source file does not exist/);
   });
 
   it('推不出資產型別時要求明確指定', async () => {
@@ -270,7 +270,7 @@ describe('uploadAsset', () => {
     await writeFile(objPath, 'o cube');
     const service = await makeService([workDir]);
     await expect(service.uploadAsset({ filePath: objPath, displayName: 'X' })).rejects.toThrow(
-      /無法從副檔名推斷/,
+      /Cannot infer the asset type from the file extension/,
     );
   });
 
@@ -310,7 +310,7 @@ describe('archiveAsset', () => {
   it('Model 先擋下來，不送出必定失敗的請求', async () => {
     openCloud.current = record({ assetType: 'Model' });
     const service = await makeService([]);
-    await expect(service.archiveAsset('100000000000001')).rejects.toThrow(/不是可封存的型別/);
+    await expect(service.archiveAsset('100000000000001')).rejects.toThrow(/is not an archivable asset type/);
     expect(openCloud.calls).not.toContain('archive');
   });
 
