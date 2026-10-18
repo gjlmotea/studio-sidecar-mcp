@@ -33,9 +33,9 @@
         },
         {
           "name": "ROBLOX_UPLOAD_ROOT",
-          "description": "Folders that uploads may read from (path-separator list); uploads are refused when unset",
+          "description": "Folders that uploads may read from, joined with the platform path delimiter: ';' on Windows (C:\\assets\\models;D:\\decals), ':' on macOS (/Users/you/models:/Volumes/art/decals). Uploads are refused when unset",
           "isRequired": false,
-          "format": "filepath"
+          "format": "string"
         },
         {
           "name": "ROBLOX_STUDIO_PATH",

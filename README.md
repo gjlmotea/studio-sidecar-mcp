@@ -1,8 +1,8 @@
 # Studio Sidecar — companion MCP server for Roblox Studio
 
-**English** | [繁體中文](README.zh-TW.md)
+**English** | [繁體中文](https://github.com/gjlmotea/studio-sidecar-mcp/blob/main/README.zh-TW.md)
 
-![Studio Sidecar: a companion MCP server for Roblox Studio](assets/social-preview.png)
+![Studio Sidecar: a companion MCP server for Roblox Studio](https://github.com/gjlmotea/studio-sidecar-mcp/raw/main/assets/social-preview.png)
 
 **Studio Sidecar fills the gaps in Roblox Studio's built-in MCP server. It does not replace it.**
 
@@ -49,26 +49,28 @@ No Studio plugin is needed. 11 tools; Windows fully verified, macOS partly (see 
 
 An MCP process can be a server and a client at the same time. Studio Sidecar starts `StudioMCP` as its own child process and connects to it as an MCP client, which gives it the built-in `execute_luau`. The chunking, sentinel and byte-check machinery is then wrapped into single tools. When the client closes normally, the child process goes away too, so this route does not leak stubs.
 
+To start `StudioMCP`, Studio Sidecar uses the same launcher as Roblox's setup guide. On Windows that is `%LOCALAPPDATA%\Roblox\mcp.bat`, run through `cmd.exe /c`; when `mcp.bat` is missing, it falls back to the most recently modified `StudioMCP.exe` under `%LOCALAPPDATA%\Roblox\Versions\`. On macOS it uses `StudioMCP` inside `RobloxStudio.app`, in `/Applications` or `~/Applications`.
+
 ## Quick start
 
-Requirements: Roblox Studio with its MCP server enabled (Studio → **Assistant Settings**), and Node.js 22 or newer.
+Requirements: Roblox Studio with **Enable Studio as MCP server** turned on (in Studio: Assistant → … → **Manage MCP Servers**), and Node.js 22 or newer.
 
 Register Studio Sidecar with your AI client. Claude Code:
 
 ```bash
-claude mcp add roblox-companion --scope user \
+claude mcp add studio-sidecar --scope user \
   -e ROBLOX_API_KEY="<your Open Cloud API key>" \
   -e ROBLOX_CREATOR_USER_ID="<your Roblox user ID>" \
   -e ROBLOX_UPLOAD_ROOT="<folder that uploads may read from>" \
   -- npx -y @gjlmotea/studio-sidecar-mcp
 ```
 
-Any client that uses a JSON config:
+Clients that read an `mcpServers` JSON config (Claude Desktop, Cursor, Gemini CLI):
 
 ```json
 {
   "mcpServers": {
-    "roblox-companion": {
+    "studio-sidecar": {
       "command": "npx",
       "args": ["-y", "@gjlmotea/studio-sidecar-mcp"],
       "env": {
@@ -81,15 +83,61 @@ Any client that uses a JSON config:
 }
 ```
 
+VS Code uses a top-level `servers` key instead, and each server has a `type`. An input variable keeps the key out of the file: VS Code asks for it the first time the server starts and stores it securely.
+
+```json
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "roblox-api-key",
+      "description": "Roblox Open Cloud API key",
+      "password": true
+    }
+  ],
+  "servers": {
+    "studio-sidecar": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@gjlmotea/studio-sidecar-mcp"],
+      "env": {
+        "ROBLOX_API_KEY": "${input:roblox-api-key}",
+        "ROBLOX_CREATOR_USER_ID": "<your Roblox user ID>",
+        "ROBLOX_UPLOAD_ROOT": "<folder that uploads may read from>"
+      }
+    }
+  }
+}
+```
+
+Where each client keeps the file:
+
+| Client | Config file |
+|---|---|
+| Claude Desktop | macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`; Windows: `%APPDATA%\Claude\claude_desktop_config.json`. **Settings → Developer → Edit Config** opens it |
+| Cursor | `~/.cursor/mcp.json` for every project, `.cursor/mcp.json` inside one project |
+| Gemini CLI | `~/.gemini/settings.json` (user), `.gemini/settings.json` (project) |
+| VS Code | `.vscode/mcp.json` in the workspace, or the user `mcp.json` that the **MCP: Open User Configuration** command opens |
+
+Sources: [Claude Desktop](https://modelcontextprotocol.io/docs/develop/connect-local-servers), [Cursor](https://cursor.com/docs/context/mcp), [Gemini CLI](https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md), [VS Code](https://code.visualstudio.com/docs/copilot/reference/mcp-configuration).
+
 All three variables are optional: without the key the four Open Cloud tools refuse, without `ROBLOX_UPLOAD_ROOT` every upload is refused, and the other tools work as usual. **Do not put the key in any config file that is tracked by version control.**
 
-Register Studio's built-in MCP server as well; script editing, screenshots and playtesting live there. On macOS the executable has a fixed path:
+Register Studio's built-in MCP server as well; script editing, screenshots and playtesting live there. The launch command on each platform, `StudioMCP` on macOS and `cmd.exe /c %LOCALAPPDATA%\Roblox\mcp.bat` on Windows, comes from Roblox's [setup guide](https://create.roblox.com/docs/studio/mcp).
+
+macOS:
 
 ```bash
 claude mcp add roblox-studio --scope user -- /Applications/RobloxStudio.app/Contents/MacOS/StudioMCP
 ```
 
-On Windows, `StudioMCP.exe` lives in `%LOCALAPPDATA%\Roblox\Versions\version-<hash>\`, and the folder changes with every Studio update, so a hard-coded path breaks on the next update. Register a small launcher that resolves the path at start-up instead, using absolute paths for both `node` and the launcher.
+Windows:
+
+```bat
+claude mcp add roblox-studio --scope user -- cmd.exe /c "%LOCALAPPDATA%\Roblox\mcp.bat"
+```
+
+In a JSON config, the macOS entry is `"command": "/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP"`, and the Windows entry is `"command": "cmd.exe"` with `"args": ["/c", "%LOCALAPPDATA%\\Roblox\\mcp.bat"]`. Register `mcp.bat` rather than `StudioMCP.exe` on Windows: `mcp.bat` keeps its path, while `StudioMCP.exe` lives in `%LOCALAPPDATA%\Roblox\Versions\version-<hash>\`, a folder that changes with Studio updates.
 
 Restart the session after registering, then call `roblox_get_status` and check `openCloudConfigured` and `allowedUploadRoots`.
 
@@ -102,10 +150,10 @@ git clone https://github.com/gjlmotea/studio-sidecar-mcp.git
 cd studio-sidecar-mcp
 corepack pnpm install --frozen-lockfile
 corepack pnpm run build
-claude mcp add roblox-companion --scope user -- "$(which node)" "$PWD/dist/index.js"
+claude mcp add studio-sidecar --scope user -- "$(which node)" "$PWD/dist/index.js"
 ```
 
-Prefer `claude mcp add` with absolute paths over a hand-written `.mcp.json`: `${CLAUDE_PROJECT_DIR}` is not expanded there and nothing reports it (the server just fails to connect), relative paths follow the directory the client was started in, and project-scope servers need an interactive approval that never appears in non-interactive sessions.
+Register with absolute paths, as above, rather than a hand-written `.mcp.json` that points at the project folder. Claude Code sets `CLAUDE_PROJECT_DIR` in the server's environment, not in its own, so a `${CLAUDE_PROJECT_DIR}` reference in the `command` or `args` of a `.mcp.json` entry, or of a local- or user-scope entry in `~/.claude.json`, needs a default such as `${CLAUDE_PROJECT_DIR:-.}`. Without a default the entry still loads, `claude mcp list` shows a missing-variable warning, and the unexpanded `${CLAUDE_PROJECT_DIR}` text is used as is. Project-scope servers from `.mcp.json` also need approval: interactive sessions ask before using them, while `claude -p` runs, Agent SDK sessions and cloud sessions load them without asking. See the [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp).
 
 ## Configuration
 
@@ -113,7 +161,7 @@ Prefer `claude mcp add` with absolute paths over a hand-written `.mcp.json`: `${
 |---|---|
 | `ROBLOX_API_KEY` | Open Cloud API key with Asset **read and write** (Creator Dashboard → Open Cloud API Keys) |
 | `ROBLOX_CREATOR_USER_ID` | Creator recorded in `creationContext` when uploading |
-| `ROBLOX_UPLOAD_ROOT` | **Folders uploads may read from** (several allowed, separated by the platform's path separator). **When unset, every upload is refused** |
+| `ROBLOX_UPLOAD_ROOT` | **Folders uploads may read from**. Several are allowed, joined with the platform's path delimiter: `;` on Windows (`C:\assets\models;D:\decals`), `:` on macOS (`/Users/you/models:/Volumes/art/decals`). **When unset, every upload is refused** |
 | `ROBLOX_STUDIO_PATH` | Studio executable; resolved automatically from the current installation when unset |
 
 `ROBLOX_UPLOAD_ROOT` is a deliberate guard rail: uploading sends a local file to an external service, and for Models it cannot be undone, so the MCP client may not pick arbitrary file paths.
@@ -176,6 +224,6 @@ corepack pnpm run verify:extract  # end to end: open_place → place_guard → l
 
 ## License and trademarks
 
-[MIT](LICENSE).
+[MIT](https://github.com/gjlmotea/studio-sidecar-mcp/blob/main/LICENSE).
 
 Studio Sidecar is an independent open-source project, not affiliated with or endorsed by Roblox Corporation. Roblox, Roblox Studio and Luau are trademarks of Roblox Corporation.
