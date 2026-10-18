@@ -1,0 +1,49 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.gjlmotea/studio-sidecar-for-roblox-studio-mcp",
+  "title": "Studio Sidecar",
+  "description": "Companion to Roblox Studio's built-in MCP: open places, guard writes, Open Cloud asset uploads.",
+  "websiteUrl": "https://github.com/gjlmotea/studio-sidecar-mcp",
+  "repository": {
+    "url": "https://github.com/gjlmotea/studio-sidecar-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@gjlmotea/studio-sidecar-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ROBLOX_API_KEY",
+          "description": "Open Cloud API key with Asset read and write; only the four Open Cloud tools need it",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "ROBLOX_CREATOR_USER_ID",
+          "description": "Roblox user ID recorded as the creator of uploaded assets",
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "ROBLOX_UPLOAD_ROOT",
+          "description": "Folders that uploads may read from (path-separator list); uploads are refused when unset",
+          "isRequired": false,
+          "format": "filepath"
+        },
+        {
+          "name": "ROBLOX_STUDIO_PATH",
+          "description": "Roblox Studio executable; resolved automatically when unset",
+          "isRequired": false,
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}
