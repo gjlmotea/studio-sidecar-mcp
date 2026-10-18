@@ -1,11 +1,11 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { RobloxService, RobloxServiceError } from '../../src/application/roblox-service.js';
-import { writeIntoOutDir } from '../../src/composition.js';
+import { clearPreviousExtraction, writeIntoOutDir } from '../../src/composition.js';
 import { ExtractionError, SENTINEL } from '../../src/domain/extraction.js';
 import type { AssetRecord, CleanupOutcome, StudioSnapshot } from '../../src/domain/contracts.js';
 import type { OpenCloud } from '../../src/ports/open-cloud.js';
@@ -273,6 +273,7 @@ type OutDirWriter = (outDir: string, relativePath: string, content: string) => P
 function keyedService(
   keyed: KeyedBridge,
   writeFile: OutDirWriter = async (_outDir, relativePath) => relativePath,
+  prepareOutDir?: (outDir: string) => Promise<void>,
 ): RobloxService {
   return new RobloxService({
     studio: noopHost,
@@ -281,6 +282,7 @@ function keyedService(
     allowedUploadRoots: [],
     bridge: keyed,
     writeFile,
+    ...(prepareOutDir === undefined ? {} : { prepareOutDir }),
   });
 }
 
@@ -372,5 +374,120 @@ describe('🔴 extractPlace 的檔名碰撞', () => {
     } finally {
       await rm(outDir, { recursive: true, force: true });
     }
+  });
+});
+
+type ScriptSpec = { path: string; className: string; source: string };
+
+/** 用正式的寫檔與清理（composition 接的那兩個）抽一次，回傳 scripts.json 記下的實際路徑。 */
+async function extractInto(outDir: string, scripts: readonly ScriptSpec[]): Promise<string[]> {
+  const keyed = new KeyedBridge(1);
+  keyed.sliceCap = 60_000;
+  keyed.stream = streamOf(scripts);
+  await keyedService(keyed, writeIntoOutDir, clearPreviousExtraction).extractPlace({ placeId: '1', outDir });
+  const index = JSON.parse(await readFile(join(outDir, 'scene', 'scripts.json'), 'utf8')) as {
+    scripts: { path: string; file: string }[];
+  };
+  expect(index.scripts.map((entry) => entry.path)).toEqual(scripts.map((script) => script.path));
+  return index.scripts.map((entry) => entry.file);
+}
+
+const missing = async (path: string): Promise<boolean> =>
+  await lstat(path).then(() => false, (error: NodeJS.ErrnoException) => error.code === 'ENOENT');
+
+describe('🔴 extractPlace 不覆蓋任何既有檔案', () => {
+  let base: string;
+  let outDir: string;
+
+  beforeEach(async () => {
+    base = await mkdtemp(join(tmpdir(), 'studio-sidecar-extract-'));
+    outDir = join(base, 'out');
+  });
+
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  it('Σ、ς、σ 各寫一份：檔案系統把它們當成同名時也不互相覆蓋', async () => {
+    // 'ς'.toLowerCase() 還是 'ς'，名稱表把它當成跟 σ 不同；不分大小寫的檔案系統卻當成同一個名字。
+    // macOS 預設的 APFS 就是這種，所以這裡走的是真的撞名路徑。
+    const scripts = [
+      { path: 'ServerScriptService/Σ', className: 'ModuleScript', source: 'return "capital sigma"' },
+      { path: 'ServerScriptService/ς', className: 'ModuleScript', source: 'return "final sigma"' },
+      { path: 'ServerScriptService/σ', className: 'ModuleScript', source: 'return "small sigma"' },
+    ];
+    const files = await extractInto(outDir, scripts);
+    for (const [i, file] of files.entries()) {
+      expect(await readFile(join(outDir, file), 'utf8')).toBe(scripts[i]?.source);
+    }
+    expect(await readdir(join(outDir, 'src', 'ServerScriptService'))).toHaveLength(3);
+
+    // 這個檔案系統把 ς 與 σ 當成同名時，名稱表的猜測撞到 EEXIST，改用下一個 ~n；不然就照名稱表。
+    await writeFile(join(base, 'probe-ς'), '');
+    const folds = !(await missing(join(base, 'probe-σ')));
+    expect(files.map((file) => file.slice('src/ServerScriptService/'.length))).toEqual(
+      folds ? ['Σ.luau', 'ς~2.luau', 'σ~3.luau'] : ['Σ.luau', 'ς.luau', 'σ~2.luau'],
+    );
+  });
+
+  it('重跑到同一個輸出目錄：只換掉上一次自己寫的檔，別人的檔不刪也不蓋，檔名不會越跑越長', async () => {
+    const first = await extractInto(outDir, [
+      { path: 'ServerScriptService/Main', className: 'Script', source: 'print("v1")' },
+      { path: 'ServerScriptService/Old', className: 'ModuleScript', source: 'return "removed later"' },
+      { path: 'ReplicatedStorage/Gone/Init', className: 'ModuleScript', source: 'return "folder removed later"' },
+    ]);
+    expect(first).toEqual([
+      'src/ServerScriptService/Main.server.luau',
+      'src/ServerScriptService/Old.luau',
+      'src/ReplicatedStorage/Gone/Init.luau',
+    ]);
+    // 使用者自己放進來的檔：一個剛好跟下一次的腳本同名，一個無關。
+    await writeFile(join(outDir, 'src', 'ServerScriptService', 'Notes.luau'), 'my notes');
+    await writeFile(join(outDir, 'README.txt'), 'mine');
+
+    const scripts = [
+      { path: 'ServerScriptService/Main', className: 'Script', source: 'print("v2")' },
+      { path: 'ServerScriptService/Notes', className: 'ModuleScript', source: 'return "notes script"' },
+    ];
+    const second = await extractInto(outDir, scripts);
+    expect(second).toEqual(['src/ServerScriptService/Main.server.luau', 'src/ServerScriptService/Notes~2.luau']);
+    for (const [i, file] of second.entries()) {
+      expect(await readFile(join(outDir, file), 'utf8')).toBe(scripts[i]?.source);
+    }
+    expect(await readFile(join(outDir, 'src', 'ServerScriptService', 'Notes.luau'), 'utf8')).toBe('my notes');
+    expect(await readFile(join(outDir, 'README.txt'), 'utf8')).toBe('mine');
+    // 上一次寫的、這次沒有的腳本不留下來，空掉的資料夾也一樣。
+    expect(await missing(join(outDir, 'src', 'ServerScriptService', 'Old.luau'))).toBe(true);
+    expect(await missing(join(outDir, 'src', 'ReplicatedStorage'))).toBe(true);
+
+    // 同一份再跑一次，結果一模一樣。
+    expect(await extractInto(outDir, scripts)).toEqual(second);
+  });
+
+  it('scene/scripts.json 不是本工具寫的：拒絕，什麼都不動', async () => {
+    await mkdir(join(outDir, 'scene'), { recursive: true });
+    await writeFile(join(outDir, 'scene', 'scripts.json'), '{"owner":"someone else"}');
+    await expect(
+      extractInto(outDir, [{ path: 'ServerScriptService/Main', className: 'Script', source: 'print(1)' }]),
+    ).rejects.toThrow(/scene\/scripts\.json/);
+    expect(await readFile(join(outDir, 'scene', 'scripts.json'), 'utf8')).toBe('{"owner":"someone else"}');
+    expect(await missing(join(outDir, 'src'))).toBe(true);
+  });
+
+  it('manifest 列了 src/ 以外或穿越出去的路徑：整份不認，一個檔都不刪', async () => {
+    await mkdir(join(outDir, 'scene'), { recursive: true });
+    await mkdir(join(outDir, 'src'), { recursive: true });
+    await writeFile(join(base, 'outside.luau'), 'outside');
+    await writeFile(join(outDir, 'src', 'Keep.luau'), 'keep');
+    const forged = {
+      extractedBy: 'studio-sidecar extract_place (read-only)',
+      scripts: [{ file: 'src/Keep.luau' }, { file: 'src/../../outside.luau' }],
+    };
+    await writeFile(join(outDir, 'scene', 'scripts.json'), JSON.stringify(forged));
+    await expect(
+      extractInto(outDir, [{ path: 'ServerScriptService/Main', className: 'Script', source: 'print(1)' }]),
+    ).rejects.toThrow(/scene\/scripts\.json/);
+    expect(await readFile(join(base, 'outside.luau'), 'utf8')).toBe('outside');
+    expect(await readFile(join(outDir, 'src', 'Keep.luau'), 'utf8')).toBe('keep');
   });
 });

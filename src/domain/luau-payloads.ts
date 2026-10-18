@@ -124,7 +124,8 @@ export function releaseBufferLuau(key: string): string {
  *
  * 兩件內建版沒有替你做的事：
  * - **整段包 pcall** —— `execute_luau` 沒有 `RobloxScript` capability，碰到受保護屬性
- *   （例如 `Lighting.Technology`）會讓**整段中止**。包起來之後錯誤變成可讀的回傳值。
+ *   （例如 `Lighting.Technology`）會讓**整段中止**。包起來之後錯誤變成可讀的回傳值；
+ *   但只有一個 pcall，錯誤之後的程式照樣不執行，之前做的修改也不會復原。
  * - **結果進 buffer 而不是直接回傳** —— 直接回傳超過 100,000 字元會被靜默截斷。
  *   放進 buffer 之後由呼叫端分塊取回，長度不再是限制。
  */

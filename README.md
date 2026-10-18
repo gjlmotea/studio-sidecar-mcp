@@ -11,7 +11,7 @@ Since 2026, Roblox Studio ships its own MCP server (`StudioMCP`, installed with 
 So Studio Sidecar adds only what the built-in server structurally cannot do, and leaves everything else to it:
 
 - **Open a place that is not open yet**, and see every Studio process and StudioMCP broker/stub on the machine.
-- **Guard writes by PlaceId**, run Luau without one protected property aborting the whole chunk, and **extract scripts past the 100k output limit** with byte-exact verification.
+- **Guard writes by PlaceId**, run Luau with runtime errors returned as readable values and output never truncated, and **extract scripts past the 100k output limit** with byte-exact verification.
 - **Upload, update and archive assets through Roblox Open Cloud**, with an explicit verdict when an update was silently deduplicated.
 
 No Studio plugin is needed. 11 tools; Windows fully verified, macOS partly (see [Platform support](#platform-support)).
@@ -36,7 +36,7 @@ No Studio plugin is needed. 11 tools; Windows fully verified, macOS partly (see 
 | `roblox_open_place` | Opening a place that is not open yet is an operating-system job: it needs a new sibling process |
 | `roblox_cleanup_stubs` | Same reason; reports by default and only terminates stubs with `apply=true`, never the broker |
 | `roblox_place_guard` | The built-in `multi_edit` writes by path, and a wrong `studio_id` silently overwrites another game with no undo or warning |
-| `roblox_luau_safe` | The built-in `execute_luau` aborts the whole chunk on a protected property and silently truncates output beyond 100k characters |
+| `roblox_luau_safe` | The built-in `execute_luau` has no PlaceId check and silently truncates output beyond 100k characters |
 | `roblox_extract_place` | There is no tool that handles the 100k truncation boundary: chunking, sentinels and per-file byte checks are left to the caller, and getting them wrong does not raise an error |
 | `roblox_get_asset` | The built-in `search_asset` reports the holder as `creatorId`, not the author |
 | `roblox_upload_asset` | `AssetService:CreateAssetAsync` inside Studio currently always throws `not available yet` |
@@ -184,9 +184,11 @@ Each of these was found on real hardware and has a regression test.
 2. The UTF-8-safe cut point is decided in Lua and reported back, and the caller continues from there, so the two sides never compute boundaries separately.
 3. A byte-count check per file (`Buffer.byteLength`, not `String.length`). Any mismatch aborts the whole extraction, because a partially correct snapshot looks like success.
 
-The data is staged in `shared.RBXEXTRACT` (Lua VM memory only, never the DataModel or the `.rbxl`) and cleared afterwards. Instance names can be almost anything, including `..` and path separators, so every path segment is sanitized and the final path is checked to be inside the output folder before writing.
+Each call stages its data under its own key, `shared.RBXEXTRACT_<32 hex digits>` (Lua VM memory only, never the DataModel or the `.rbxl`), and clears it afterwards, so overlapping calls never read each other's data. Instance names can be almost anything, including `..` and path separators, so every path segment is sanitized and the final path is checked to be inside the output folder before writing.
 
-**The Studio bridge must live as long as the server.** Closing it after every call makes the first call succeed and every later one fail with "Unable to reach Roblox Studio right now", which sounds like Studio is closed. It is not: closing kills the stub, and the next call races the broker. The same message also appears during a cold start before a fresh stub reaches the broker, so the bridge retries that one message, and only that one, for up to 20 seconds with exponential backoff.
+Files are created exclusively and never overwrite anything. When a name is already taken, including by a name the file system treats as equal (`Σ`, `ς` and `σ` on a case-insensitive volume), the script gets the next `~n` suffix, and `scene/scripts.json` records the path actually written. Re-running into the same folder first deletes the files listed in that folder's previous `scene/scripts.json`, and nothing else; a folder whose `scene/` files were not written by Studio Sidecar is refused.
+
+**The Studio bridge must live as long as the server.** Closing it after every call makes the first call succeed and every later one fail with "Unable to reach Roblox Studio right now", which sounds like Studio is closed. It is not: closing kills the stub, and the next call races the broker. The same message also appears during a cold start before a fresh stub reaches the broker, so the bridge retries the Studio listing on that one message, and only that one, for up to 20 seconds; the wait grows by 250 ms per attempt, up to 1.5 seconds. Once the server starts shutting down, the bridge refuses new connections, so a call that is still finishing cannot start a fresh stub.
 
 **Open Cloud formats are narrow.** Models accept `.fbx` only; Decals accept bmp, jpeg, png and tga; Audio accepts mp3 and ogg and can only be created, not updated, under a monthly quota. Wrong formats would only fail after polling the operation, so they are rejected locally. Models and Decals have never supported archiving, and `roblox_archive_asset` says so up front.
 
@@ -205,9 +207,11 @@ Platform differences sit behind `ports/process-inspector.ts`; broker detection, 
 ## Boundaries
 
 - **No window focus changes.** Stealing focus can make a stray key close a freshly loaded place.
-- **`roblox_luau_safe` is not a new way to run arbitrary code.** `execute_luau` is already in the client's hands; this tool adds a mandatory PlaceId guard, a whole-chunk `pcall` and chunked results in front of the same entry point. It is not a sandbox.
+- **`roblox_luau_safe` is not a new way to run arbitrary code.** `execute_luau` is already in the client's hands; this tool adds a mandatory PlaceId guard, one `pcall` around the whole chunk and chunked results in front of the same entry point. The `pcall` catches a runtime error and returns it as a readable value; the code after the error does not run, and changes made before the error are not rolled back. It is not a sandbox.
 - **No reverse engineering of the broker's private protocol on 13469.** Talking to `StudioMCP` as an ordinary MCP client makes that unnecessary.
 - **No "remove from inventory".** That goes through `inventory.roblox.com` with a signed-in session cookie and CSRF token, which an Open Cloud API key cannot do.
+- **Known limitation: a folder on the output path can be swapped between the check and the file operation.** Each folder level is resolved with `realpath` and checked to be inside the output folder before a file is written, or a file from the previous extraction is deleted, but another program on the same machine could replace a folder with a symlink in between (time-of-check/time-of-use). The final file is created with `O_EXCL`, so an existing file or symlink at that name is never opened; `O_NOFOLLOW` is added where the platform has it, and Windows (libuv) does not support it.
+- **Known limitation: a failed buffer release leaves the key behind.** If releasing a Luau buffer fails, or is skipped because the server is shutting down, that call's `shared.RBXEXTRACT_…` key stays in Studio's `shared` table. There is no retry and no expiry.
 
 ## Development
 

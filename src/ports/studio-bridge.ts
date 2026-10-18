@@ -34,3 +34,11 @@ export class StudioBridgeError extends Error {
     this.name = 'StudioBridgeError';
   }
 }
+
+/** 橋已經在關或已經關掉：不會為了這次呼叫再開一條 StudioMCP 連線。 */
+export class StudioBridgeClosedError extends StudioBridgeError {
+  constructor() {
+    super('The Studio bridge is shut down (the server is closing), so no new StudioMCP connection is opened.');
+    this.name = 'StudioBridgeClosedError';
+  }
+}

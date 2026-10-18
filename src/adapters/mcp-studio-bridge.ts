@@ -5,7 +5,12 @@ import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-import { StudioBridgeError, type ConnectedStudio, type StudioBridge } from '../ports/studio-bridge.js';
+import {
+  StudioBridgeClosedError,
+  StudioBridgeError,
+  type ConnectedStudio,
+  type StudioBridge,
+} from '../ports/studio-bridge.js';
 
 type ToolResult = {
   readonly content?: readonly { readonly type?: string; readonly text?: string }[];
@@ -60,29 +65,25 @@ function firstText(result: ToolResult, context: string): string {
   return text;
 }
 
-export class McpStudioBridge implements StudioBridge {
-  #client: Client | undefined;
-  readonly #override: { command: string; args: readonly string[] } | undefined;
-  readonly #timeoutMs: number;
-  readonly #readyTimeoutMs: number;
+/** 橋只用到 client 的這兩個方法；測試注入假的。 */
+export type BridgeClient = {
+  callTool(
+    params: { readonly name: string; readonly arguments: Record<string, unknown> },
+    resultSchema: undefined,
+    options: { readonly timeout: number },
+  ): Promise<unknown>;
+  close(): Promise<void>;
+};
 
-  constructor(options: {
-    readonly command?: string;
-    readonly args?: readonly string[];
-    readonly timeoutMs?: number;
-    /** 等 stub 連上 broker 的上限。實測冷啟動約需數秒。 */
-    readonly readyTimeoutMs?: number;
-  } = {}) {
-    this.#override = options.command === undefined
-      ? undefined
-      : { command: options.command, args: options.args ?? [] };
-    this.#timeoutMs = options.timeoutMs ?? 180_000;
-    this.#readyTimeoutMs = options.readyTimeoutMs ?? 20_000;
-  }
+/**
+ * 開始一條連線。client 立刻交回（握手途中也要能 close 它），`ready` 在握手完成時 resolve。
+ */
+export type BridgeConnector = () => { readonly client: BridgeClient; readonly ready: Promise<void> };
 
-  async #connected(): Promise<Client> {
-    if (this.#client !== undefined) return this.#client;
-    const launch = this.#override ?? resolveBridgeCommand();
+/** 正式執行時的連線方式：把 StudioMCP 當子行程啟動，以 MCP client 身分連上。 */
+function stdioConnector(override: { command: string; args: readonly string[] } | undefined): BridgeConnector {
+  return () => {
+    const launch = override ?? resolveBridgeCommand();
     if (launch === undefined) {
       throw new StudioBridgeError(
         'StudioMCP executable not found; make sure Roblox Studio is installed. '
@@ -96,7 +97,76 @@ export class McpStudioBridge implements StudioBridge {
       env: getDefaultEnvironment(),
     });
     const client = new Client({ name: 'roblox-mcp-bridge', version: '0.1.0' });
-    await client.connect(transport);
+    return { client, ready: client.connect(transport) };
+  };
+}
+
+/**
+ * 一個 server 只開一條 StudioMCP 連線，關機之後不再開。
+ *
+ * 🔴 三個競爭都會留下沒人收的 StudioMCP 子行程（stub）：
+ * - 兩個呼叫同時第一次連線，各開一條，close 只收得到其中一條 —— 所以握手中的連線共用 `#connecting`。
+ * - close 時還在握手的那條，握手完成後就沒人收了 —— 所以 close 連它一起收，並等它結束。
+ * - 關機後還在跑的呼叫（例如 runLuau 的 finally 要釋放 buffer）又把橋接回來 ——
+ *   所以 closing／closed 之後一律拒絕連線，丟 `StudioBridgeClosedError`。
+ */
+export class McpStudioBridge implements StudioBridge {
+  #state: 'open' | 'closing' | 'closed' = 'open';
+  /** 握手完成的連線。 */
+  #client: BridgeClient | undefined;
+  /** 握手中的連線；close 要拿得到它才收得掉。 */
+  #pending: BridgeClient | undefined;
+  /** 進行中的握手，同時第一次連線的呼叫都等這一個。 */
+  #connecting: Promise<BridgeClient> | undefined;
+  #closing: Promise<void> | undefined;
+  readonly #connect: BridgeConnector;
+  readonly #timeoutMs: number;
+  readonly #readyTimeoutMs: number;
+
+  constructor(options: {
+    readonly command?: string;
+    readonly args?: readonly string[];
+    readonly timeoutMs?: number;
+    /** 等 stub 連上 broker 的上限。實測冷啟動約需數秒。 */
+    readonly readyTimeoutMs?: number;
+    /** 測試用；正式執行時啟動 StudioMCP 子行程。 */
+    readonly connect?: BridgeConnector;
+  } = {}) {
+    this.#connect = options.connect ?? stdioConnector(
+      options.command === undefined ? undefined : { command: options.command, args: options.args ?? [] },
+    );
+    this.#timeoutMs = options.timeoutMs ?? 180_000;
+    this.#readyTimeoutMs = options.readyTimeoutMs ?? 20_000;
+  }
+
+  async #connected(): Promise<BridgeClient> {
+    if (this.#state !== 'open') throw new StudioBridgeClosedError();
+    if (this.#client !== undefined) return this.#client;
+    if (this.#connecting === undefined) {
+      const attempt: Promise<BridgeClient> = this.#open().finally(() => {
+        if (this.#connecting === attempt) this.#connecting = undefined;
+      });
+      this.#connecting = attempt;
+    }
+    return await this.#connecting;
+  }
+
+  async #open(): Promise<BridgeClient> {
+    const { client, ready } = this.#connect();
+    this.#pending = client;
+    let failure: { readonly error: unknown } | undefined;
+    try {
+      await ready;
+    } catch (error) {
+      failure = { error };
+    }
+    // close() 在握手途中把它拿走了：收它是 close() 的事，這裡只回報已關閉。
+    if (this.#pending !== client) throw new StudioBridgeClosedError();
+    this.#pending = undefined;
+    if (failure !== undefined) {
+      await client.close().catch(() => undefined);
+      throw failure.error;
+    }
     this.#client = client;
     return client;
   }
@@ -164,9 +234,26 @@ export class McpStudioBridge implements StudioBridge {
     return firstText(result, 'execute_luau');
   }
 
+  /** 收掉連線（包括還在握手的那條）。可以重複呼叫；之後的呼叫一律拒絕。 */
   async close(): Promise<void> {
-    const client = this.#client;
+    if (this.#closing === undefined) {
+      this.#state = 'closing';
+      this.#closing = this.#shutdown().finally(() => {
+        this.#state = 'closed';
+      });
+    }
+    await this.#closing;
+  }
+
+  async #shutdown(): Promise<void> {
+    const clients = [this.#client, this.#pending].filter((client) => client !== undefined);
+    const connecting = this.#connecting;
     this.#client = undefined;
-    if (client !== undefined) await client.close();
+    this.#pending = undefined;
+    const results = await Promise.allSettled(clients.map(async (client) => await client.close()));
+    // 等握手那一段真的結束，close 回來時就不會還有連線在半路上。
+    await connecting?.catch(() => undefined);
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed !== undefined) throw failed.reason;
   }
 }

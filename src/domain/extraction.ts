@@ -202,16 +202,26 @@ type NameNode = {
   readonly dirs: Map<string, { readonly name: string; readonly node: NameNode }>;
 };
 
-function claimName(node: NameNode, candidate: (n: number) => string): string {
+function claimName(node: NameNode, candidate: (n: number) => string): { readonly name: string; readonly n: number } {
   for (let n = 1; ; n += 1) {
     const name = candidate(n);
     const key = foldName(name);
     if (!node.taken.has(key)) {
       node.taken.add(key);
-      return name;
+      return { name, n };
     }
   }
 }
+
+export type ScriptTarget = {
+  /** 名稱表排出來的路徑，也就是第一個要試的名字。 */
+  readonly path: string;
+  /**
+   * 第一個名字在磁碟上已經被占走時，第 `attempt` 個（從 1 起算）改試的名字。
+   * 同一套 `~n` 規則，n 從名稱表用掉的編號往上接。
+   */
+  readonly fallback: (attempt: number) => string;
+};
 
 /**
  * 在寫任何一個檔之前，一次排好每份腳本的相對路徑（`src/<Service>/…/<名>.<型別>.luau`）。
@@ -223,10 +233,14 @@ function claimName(node: NameNode, candidate: (n: number) => string): string {
  *
  * 撞名時依資料流順序加 `~2`、`~3`…（資料夾加在名字後，檔案加在副檔名前），
  * 同一份 place 每次抽出來的檔名都一樣。回傳的順序與輸入相同。
+ *
+ * 🔴 這張表只是第一個猜測。字串比對猜不完檔案系統認為的「同名」：`'ς'.toLowerCase()` 還是 `ς`，
+ * 不分大小寫的檔案系統卻把 `Σ`、`ς`、`σ` 當成同一個名字。所以寫檔一律獨佔建立（O_EXCL），
+ * 撞到 EEXIST 就改用 `fallback` 的下一個名字，scripts.json 記實際寫入的那個。
  */
-export function planScriptPaths(
+export function planScriptTargets(
   files: readonly Pick<ExtractedFile, 'path' | 'className'>[],
-): readonly string[] {
+): readonly ScriptTarget[] {
   const newNode = (): NameNode => ({ taken: new Set(), dirs: new Map() });
   const root = newNode();
   return files.map((file) => {
@@ -238,14 +252,59 @@ export function planScriptPaths(
       let dir = node.dirs.get(raw);
       if (dir === undefined) {
         const base = sanitizeSegment(raw);
-        dir = { name: claimName(node, (n) => (n === 1 ? base : `${base}~${n}`)), node: newNode() };
+        dir = { name: claimName(node, (n) => (n === 1 ? base : `${base}~${n}`)).name, node: newNode() };
         node.dirs.set(raw, dir);
       }
       out.push(dir.name);
       node = dir.node;
     }
     const ext = scriptExtension(file.className);
-    out.push(claimName(node, (n) => sanitizeSegment(n === 1 ? `${leaf}${ext}` : `${leaf}~${n}${ext}`)));
-    return out.join('/');
+    const fileName = (n: number): string => sanitizeSegment(n === 1 ? `${leaf}${ext}` : `${leaf}~${n}${ext}`);
+    const claimed = claimName(node, fileName);
+    const dir = out.join('/');
+    return {
+      path: `${dir}/${claimed.name}`,
+      fallback: (attempt: number) => `${dir}/${fileName(claimed.n + attempt)}`,
+    };
   });
+}
+
+/** `scene/scripts.json` 的 `extractedBy`，用來認出「這是本工具寫的」。 */
+export const EXTRACTED_BY = 'studio-sidecar extract_place (read-only)';
+
+/** 每次抽取都會寫的兩個 scene 檔。名字固定，下一次靠 scripts.json 找到上一次寫了什麼。 */
+export const SCENE_FILES = ['scene/place.json', 'scene/scripts.json'] as const;
+
+/** 本工具寫得出來的腳本路徑：`src/` 底下、`.luau` 結尾、每一段都是清理過的名字。 */
+function isScriptFilePath(file: string): boolean {
+  const segments = file.split('/');
+  return segments.length >= 2
+    && segments[0] === 'src'
+    && file.endsWith('.luau')
+    && segments.every((segment) => segment !== '' && sanitizeSegment(segment) === segment);
+}
+
+/**
+ * 讀上一次抽取留下的 `scene/scripts.json`，回傳它寫過的腳本檔（相對路徑）。
+ *
+ * 不是本工具寫的，或任何一筆不像本工具寫得出來的路徑（不在 `src/` 底下、不是 `.luau`、
+ * 含有 `..` 這種清理後會變的片段）時回 undefined：整份不認，一個檔都不刪。
+ */
+export function scriptFilesInManifest(text: string): readonly string[] | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const manifest = parsed as { readonly extractedBy?: unknown; readonly scripts?: unknown };
+  if (manifest.extractedBy !== EXTRACTED_BY || !Array.isArray(manifest.scripts)) return undefined;
+  const files: string[] = [];
+  for (const entry of manifest.scripts as readonly unknown[]) {
+    const file = typeof entry === 'object' && entry !== null ? (entry as { readonly file?: unknown }).file : undefined;
+    if (typeof file !== 'string' || !isScriptFilePath(file)) return undefined;
+    files.push(file);
+  }
+  return files;
 }

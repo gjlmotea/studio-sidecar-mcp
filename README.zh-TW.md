@@ -11,7 +11,7 @@ Roblox Studio 從 2026 年起內建自己的 MCP server（`StudioMCP`，隨 Stud
 所以 Studio Sidecar 只補內建 server 結構上做不到的事，其餘一律交給它：
 
 - **開啟還沒開的 place**，並看到這台機器上所有 Studio 行程與 StudioMCP 的 broker／stub。
-- **依 PlaceId 守住寫入**、執行 Luau 時不讓一個受保護屬性中止整段程式，以及**突破 100k 輸出上限抽取腳本**，並逐位元組校驗。
+- **依 PlaceId 守住寫入**、執行 Luau 時把執行期錯誤變成可讀的回傳值且輸出不被截斷，以及**突破 100k 輸出上限抽取腳本**，並逐位元組校驗。
 - **透過 Roblox Open Cloud 上傳、更新與封存資產**；更新被靜默去重時會明確回報判定結果。
 
 不需要 Studio 外掛。共 11 個工具；Windows 已完整驗證，macOS 部分驗證（見[平台支援](#平台支援)）。
@@ -36,7 +36,7 @@ Roblox Studio 從 2026 年起內建自己的 MCP server（`StudioMCP`，隨 Stud
 | `roblox_open_place` | 開啟還沒開的 place 是作業系統層級的事：需要另起一個同層級的行程 |
 | `roblox_cleanup_stubs` | 理由同上；預設只回報，只有 `apply=true` 才終止 stub，而且絕不動 broker |
 | `roblox_place_guard` | 內建的 `multi_edit` 依路徑寫入，`studio_id` 傳錯就會靜默覆蓋另一個遊戲，沒有復原也沒有警告 |
-| `roblox_luau_safe` | 內建的 `execute_luau` 碰到受保護屬性會中止整段程式，超過 100k 字元的輸出會被靜默截斷 |
+| `roblox_luau_safe` | 內建的 `execute_luau` 沒有 PlaceId 檢查，超過 100k 字元的輸出會被靜默截斷 |
 | `roblox_extract_place` | 沒有工具處理 100k 截斷邊界：分塊、哨兵與逐檔位元組校驗都留給呼叫端，而做錯也不會報錯 |
 | `roblox_get_asset` | 內建的 `search_asset` 回報的 `creatorId` 是持有者，不是作者 |
 | `roblox_upload_asset` | Studio 裡的 `AssetService:CreateAssetAsync` 目前一律拋出 `not available yet` |
@@ -184,9 +184,11 @@ claude mcp add studio-sidecar --scope user -- "$(which node)" "$PWD/dist/index.j
 2. UTF-8 安全的切點由 Lua 決定並回報，呼叫端從那裡接著讀，兩邊從不各自計算邊界。
 3. 逐檔校驗位元組數（用 `Buffer.byteLength`，不是 `String.length`）。任何一檔對不上就中止整次抽取，因為局部正確的快照看起來像成功。
 
-資料暫存在 `shared.RBXEXTRACT`（只在 Lua VM 記憶體裡，不進 DataModel 也不進 `.rbxl`），用完就清掉。實例名稱幾乎可以是任何字串，包括 `..` 與路徑分隔符，所以每段路徑都會先清理，寫入前也會確認最終路徑落在輸出資料夾內。
+每次呼叫把資料暫存在自己的 key 底下：`shared.RBXEXTRACT_<32 位十六進位>`（只在 Lua VM 記憶體裡，不進 DataModel 也不進 `.rbxl`），用完就清掉，所以重疊的呼叫不會讀到彼此的資料。實例名稱幾乎可以是任何字串，包括 `..` 與路徑分隔符，所以每段路徑都會先清理，寫入前也會確認最終路徑落在輸出資料夾內。
 
-**Studio 橋接必須和 server 活得一樣久。** 每次呼叫後就關閉它，會讓第一次呼叫成功、之後每次都失敗，錯誤訊息是 "Unable to reach Roblox Studio right now"，聽起來像 Studio 沒開。其實不是：關閉會殺掉 stub，下一次呼叫就和 broker 搶時間。冷啟動時，新的 stub 還沒連上 broker 之前也會出現同一句訊息，所以橋接只針對這一句訊息重試，最多 20 秒，採指數退避。
+檔案一律獨佔建立，從不覆蓋任何東西。名字已經被占用時（包括檔案系統視為同名的名字，例如不分大小寫的磁碟上的 `Σ`、`ς` 與 `σ`），該腳本改用下一個 `~n` 後綴，`scene/scripts.json` 記下實際寫入的路徑。重跑到同一個資料夾時，先刪掉該資料夾上一次 `scene/scripts.json` 列出的檔案，其他一律不動；`scene/` 底下的檔案不是 Studio Sidecar 寫的資料夾會被拒絕。
+
+**Studio 橋接必須和 server 活得一樣久。** 每次呼叫後就關閉它，會讓第一次呼叫成功、之後每次都失敗，錯誤訊息是 "Unable to reach Roblox Studio right now"，聽起來像 Studio 沒開。其實不是：關閉會殺掉 stub，下一次呼叫就和 broker 搶時間。冷啟動時，新的 stub 還沒連上 broker 之前也會出現同一句訊息，所以橋接只針對這一句訊息重試列出 Studio 的呼叫，最多 20 秒；每次重試前的等待比上一次多 250 毫秒，最長 1.5 秒。server 開始關機後，橋接拒絕任何新連線，所以那時還在收尾的呼叫不會再生出一隻新的 stub。
 
 **Open Cloud 接受的格式很窄。** Model 只接受 `.fbx`；Decal 接受 bmp、jpeg、png 與 tga；Audio 接受 mp3 與 ogg，只能新建、不能更新，而且有每月配額。格式錯誤要等輪詢 operation 之後才會失敗，所以在本機先擋下。Model 與 Decal 從未支援封存，`roblox_archive_asset` 一開始就會說明。
 
@@ -205,9 +207,11 @@ claude mcp add studio-sidecar --scope user -- "$(which node)" "$PWD/dist/index.j
 ## 邊界
 
 - **不改變視窗焦點。** 搶焦點可能讓一個游離按鍵關掉剛載好的 place。
-- **`roblox_luau_safe` 不是執行任意程式碼的新途徑。** `execute_luau` 本來就在 client 手上；這個工具只是在同一個入口前加上強制的 PlaceId 守衛、整段 `pcall` 與分塊結果。它不是沙箱。
+- **`roblox_luau_safe` 不是執行任意程式碼的新途徑。** `execute_luau` 本來就在 client 手上；這個工具只是在同一個入口前加上強制的 PlaceId 守衛、包住整段程式的單一 `pcall` 與分塊結果。`pcall` 會接住執行期錯誤，把它變成可讀的回傳值；錯誤之後的程式不會執行，錯誤之前做的修改也不會復原。它不是沙箱。
 - **不逆向 broker 在 13469 上的私有協定。** 以一般 MCP client 的身分和 `StudioMCP` 溝通，就沒有這個必要。
 - **不提供「從物品欄移除」。** 那要透過 `inventory.roblox.com`，並帶登入後的 session cookie 與 CSRF token，Open Cloud API 金鑰做不到。
+- **已知限制：輸出路徑上的資料夾可能在檢查與檔案操作之間被換掉。** 寫入檔案、或刪掉上一次抽取的檔案之前，每一層資料夾都會先用 `realpath` 解析並確認落在輸出資料夾內；但同一台機器上的其他程式可以在這之間把某個資料夾換成 symlink（time-of-check/time-of-use）。最後那個檔案以 `O_EXCL` 建立，所以那個名字上已經存在的檔案或 symlink 絕不會被打開；平台有 `O_NOFOLLOW` 時也會加上，而 Windows（libuv）不支援它。
+- **已知限制：buffer 釋放失敗時，那把 key 會留下來。** 釋放 Luau buffer 失敗，或因為 server 正在關機而跳過時，那次呼叫的 `shared.RBXEXTRACT_…` 會留在 Studio 的 `shared` 表裡，沒有重試，也沒有過期。
 
 ## 開發
 

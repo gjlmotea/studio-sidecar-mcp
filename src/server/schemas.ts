@@ -159,7 +159,10 @@ export const extractPlaceInputSchema = {
   placeId: idString.describe(
     'placeId of the target place. Each connected Studio is asked in turn, and it aborts if none matches: extracting the wrong place would write a snapshot attributed to the wrong place.',
   ),
-  outDir: z.string().describe('Output folder. Writes src/**, scene/place.json and scene/scripts.json.'),
+  outDir: z.string().describe(
+    'Output folder. Writes src/**, scene/place.json and scene/scripts.json. Use an empty folder or one from a previous extraction; '
+    + 'files the previous extraction wrote are replaced, other files are left alone.',
+  ),
   chunkBytes: z
     .number()
     .int()

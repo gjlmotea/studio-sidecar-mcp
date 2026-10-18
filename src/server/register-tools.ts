@@ -237,12 +237,13 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
   server.registerTool(
     'roblox_luau_safe',
     {
-      title: 'Run Luau in a given place without truncation or whole-chunk aborts',
+      title: 'Run Luau in a given place, with errors caught and no output truncation',
       description:
         'Run Luau in the Studio whose placeId matches. Compared with the built-in execute_luau, it adds three guard rails: '
         + '(1) **a mandatory placeId guard**: on a mismatch it aborts without running any code; '
-        + '(2) **the whole chunk is wrapped in pcall**: execute_luau lacks the RobloxScript capability, so touching a protected property '
-        + '(such as Lighting.Technology) aborts the whole chunk; wrapped, the error becomes a readable return value; '
+        + '(2) **the whole chunk runs inside one pcall**: a runtime error (for example from touching a protected property such as Lighting.Technology, '
+        + 'which execute_luau cannot read because it lacks the RobloxScript capability) is caught and returned as a readable value with ok=false. '
+        + 'The code after the error does not run, and changes made before the error are not rolled back; '
         + '(3) **results are fetched from a buffer in chunks**, so they are not subject to the 100000-character limit and are never silently truncated. '
         + 'This is not a new way to run code: execute_luau is already in your hands, and this tool only adds guard rails.',
       inputSchema: luauSafeInputSchema,
@@ -284,7 +285,11 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
         + 'This tool wraps up the whole chunking/sentinel/per-file byte-check machinery needed because a single execute_luau reply '
         + 'is capped at 100000 characters and silently truncated beyond that. If any chunk is missing its sentinel, the whole batch aborts, '
         + 'because a partially correct snapshot is more dangerous than a failed extraction (it looks like success). '
-        + 'It first asks each connected Studio in turn to verify the placeId, and aborts on a mismatch.',
+        + 'It first asks each connected Studio in turn to verify the placeId, and aborts on a mismatch. '
+        + 'It never overwrites a file: when a name is already taken in the folder (including names the file system treats as equal), '
+        + 'the script gets the next ~n suffix, and scene/scripts.json records the path actually written. '
+        + 'Re-running into the same folder first deletes the files listed in that folder\'s previous scene/scripts.json, and nothing else; '
+        + 'it refuses a folder whose scene/ files were not written by this tool.',
       inputSchema: extractPlaceInputSchema,
       outputSchema: extractPlaceOutputSchema,
       annotations: {

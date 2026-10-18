@@ -43,3 +43,12 @@ describe('🔴 writeIntoOutDir 不跟著 symlink 寫出輸出目錄', () => {
     expect(await readdir(outside)).toEqual(['notes.txt']);
   });
 });
+
+describe('🔴 writeIntoOutDir 不覆蓋既有檔案', () => {
+  it('目標已經存在時以 EEXIST 失敗，原本的內容留著', async () => {
+    await mkdir(join(outDir, 'src'));
+    await writeFile(join(outDir, 'src', 'Main.luau'), 'keep me');
+    await expect(writeIntoOutDir(outDir, 'src/Main.luau', 'print(1)')).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(await readFile(join(outDir, 'src', 'Main.luau'), 'utf8')).toBe('keep me');
+  });
+});

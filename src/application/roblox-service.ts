@@ -4,11 +4,13 @@ import { resolve } from 'node:path';
 import { assertArchivable, inferAssetType, type AssetType } from '../domain/asset-types.js';
 import {
   DEFAULT_CHUNK_BYTES,
+  EXTRACTED_BY,
   ExtractionError,
   parseScriptStream,
-  planScriptPaths,
+  planScriptTargets,
   unwrapChunk,
   type ExtractedFile,
+  type ScriptTarget,
 } from '../domain/extraction.js';
 import {
   buildScriptStreamLuau,
@@ -22,7 +24,8 @@ import {
   sliceBufferLuau,
 } from '../domain/luau-payloads.js';
 import { isPathInside } from '../domain/path-containment.js';
-import type { StudioBridge } from '../ports/studio-bridge.js';
+import { log as defaultLog } from '../logger.js';
+import { StudioBridgeClosedError, type StudioBridge } from '../ports/studio-bridge.js';
 import type {
   AssetRecord,
   CleanupOutcome,
@@ -34,6 +37,9 @@ import { buildStudioArgs, describeWindowsCommandLine } from '../domain/launch-in
 import { classifyUpdate, type UpdateOutcome } from '../domain/revision.js';
 import type { OpenCloud } from '../ports/open-cloud.js';
 import type { StudioHost } from '../ports/studio-host.js';
+
+/** 一份腳本在輸出目錄裡最多試幾個名字。 */
+const MAX_NAME_ATTEMPTS = 1_000;
 
 export class RobloxServiceError extends Error {
   constructor(message: string) {
@@ -53,8 +59,15 @@ export type RobloxServiceOptions = {
   readonly now?: () => number;
   /** 連到內建 Studio MCP 的橋；抽取功能需要它。 */
   readonly bridge?: StudioBridge;
-  /** 寫檔；路徑相對於抽取的輸出目錄。 */
+  /**
+   * 寫檔；路徑相對於抽取的輸出目錄，回傳實際寫入的路徑。
+   * 目標已經存在時不可覆蓋，要以 `code: 'EEXIST'` 失敗，抽取會改用下一個名字。
+   */
   readonly writeFile?: (outDir: string, relativePath: string, content: string) => Promise<string>;
+  /** 落檔前整理輸出目錄（清掉上一次抽取寫的檔）。 */
+  readonly prepareOutDir?: (outDir: string) => Promise<void>;
+  /** 診斷訊息；預設寫 stderr。 */
+  readonly log?: typeof defaultLog;
 };
 
 export type ExtractOptions = {
@@ -108,6 +121,8 @@ export class RobloxService {
   readonly #now: () => number;
   readonly #bridge: StudioBridge | undefined;
   readonly #writeFile: RobloxServiceOptions['writeFile'];
+  readonly #prepareOutDir: RobloxServiceOptions['prepareOutDir'];
+  readonly #log: typeof defaultLog;
 
   constructor(options: RobloxServiceOptions) {
     this.#studio = options.studio;
@@ -119,6 +134,8 @@ export class RobloxService {
     this.#now = options.now ?? Date.now;
     this.#bridge = options.bridge;
     this.#writeFile = options.writeFile;
+    this.#prepareOutDir = options.prepareOutDir;
+    this.#log = options.log ?? defaultLog;
   }
 
   #requireBridge(): StudioBridge {
@@ -204,12 +221,24 @@ export class RobloxService {
    *
    * 橋的生命週期屬於整個 server（`closeBridge()` 在關機時呼叫），
    * 這樣既避開那個競爭，也少生一大堆 stub。
+   *
+   * 關機途中橋會拒絕連線，這一步就跳過：為了釋放 buffer 再開一條 StudioMCP 正是會漏 stub 的那種事。
+   * 沒釋放的 key 會留在 Studio 的 `shared` 裡，沒有重試也沒有過期（README 的已知限制）。
    */
   async #releaseBuffer(bridge: StudioBridge, key: string, studioId?: string): Promise<void> {
+    if (studioId === undefined) return;
     try {
-      if (studioId !== undefined) await bridge.executeLuau(studioId, releaseBufferLuau(key));
-    } catch {
-      // 釋放失敗不該蓋掉真正的錯誤。
+      await bridge.executeLuau(studioId, releaseBufferLuau(key));
+    } catch (error) {
+      // 釋放失敗不該蓋掉真正的錯誤，只記一行。
+      if (error instanceof StudioBridgeClosedError) {
+        this.#log('info', 'Luau buffer release skipped: the Studio bridge is shut down', { key });
+      } else {
+        this.#log('error', 'Luau buffer release failed', {
+          key,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }
 
@@ -241,7 +270,9 @@ export class RobloxService {
   }
 
   /**
-   * 在指定 place 執行 Luau，且不會被截斷、不會因為受保護屬性整段中止。
+   * 在指定 place 執行 Luau：結果不會被截斷，執行期錯誤會被接住，變成可讀的回傳值（ok=false）。
+   *
+   * 整段只包一個 pcall：錯誤之後的程式不會執行，錯誤之前做的修改也不會復原。
    *
    * ⚠️ 這不是新的任意執行入口 —— 內建版的 `execute_luau` 本來就在客戶端手上。
    * 這裡加的是三道內建版沒有的護欄：強制 placeId 守衛、整段 pcall、結果走 buffer 分塊。
@@ -329,16 +360,23 @@ export class RobloxService {
       // ── 4. 逐檔校驗（parseScriptStream 內含位元組數比對）─────────────
       const files: readonly ExtractedFile[] = parseScriptStream(stream);
 
+      // 從 Studio 讀的東西全部到手才動磁碟：讀到一半失敗時，上一次的快照還完整留著。
+      const metaRaw = await bridge.executeLuau(target.id, placeMetaLuau());
+      const meta = unwrapChunk(metaRaw, 'place settings');
+
       // ── 5. 落檔 ────────────────────────────────────────────────────
+      // 先清掉上一次抽取寫的檔（只有那些），再全部獨佔建立。
+      await this.#prepareOutDir?.(options.outDir);
       // 名稱表先整份排好再寫：清理後同名、只差大小寫、兄弟同名都會互相覆蓋。
-      // scripts.json 記的就是這張表，也就是實際寫入的路徑。
-      const paths = planScriptPaths(files);
+      // 磁碟上撞名時改用下一個名字，scripts.json 記實際寫入的路徑。
+      const targets = planScriptTargets(files);
       const written: string[] = [];
       const index: { path: string; className: string; file: string; bytes: number }[] = [];
       for (const [i, file] of files.entries()) {
-        const relative = paths[i];
-        if (relative === undefined) throw new ExtractionError(`No output path was planned for ${file.path}.`);
-        written.push(await writeFile(options.outDir, relative, file.source));
+        const planned = targets[i];
+        if (planned === undefined) throw new ExtractionError(`No output path was planned for ${file.path}.`);
+        const { relative, absolute } = await this.#writeFirstFree(writeFile, options.outDir, planned, file);
+        written.push(absolute);
         index.push({
           path: file.path,
           className: file.className,
@@ -347,14 +385,12 @@ export class RobloxService {
         });
       }
 
-      const metaRaw = await bridge.executeLuau(target.id, placeMetaLuau());
-      const meta = unwrapChunk(metaRaw, 'place settings');
       written.push(await writeFile(options.outDir, 'scene/place.json', `${meta}\n`));
       written.push(
         await writeFile(
           options.outDir,
           'scene/scripts.json',
-          `${JSON.stringify({ extractedBy: 'roblox-mcp extract_place (read-only)', scriptCount, totalBytes, scripts: index }, null, 2)}\n`,
+          `${JSON.stringify({ extractedBy: EXTRACTED_BY, scriptCount, totalBytes, scripts: index }, null, 2)}\n`,
         ),
       );
 
@@ -371,6 +407,26 @@ export class RobloxService {
       // buffer 是 Lua VM 的執行期記憶體，不清會一直佔著。
       await this.#releaseBuffer(bridge, key, studioId);
     }
+  }
+
+  /** 依序試名稱表的名字與它的後備名字，寫進第一個磁碟上還沒被占用的。 */
+  async #writeFirstFree(
+    writeFile: NonNullable<RobloxServiceOptions['writeFile']>,
+    outDir: string,
+    planned: ScriptTarget,
+    file: ExtractedFile,
+  ): Promise<{ readonly relative: string; readonly absolute: string }> {
+    for (let attempt = 0; attempt < MAX_NAME_ATTEMPTS; attempt += 1) {
+      const relative = attempt === 0 ? planned.path : planned.fallback(attempt);
+      try {
+        return { relative, absolute: await writeFile(outDir, relative, file.source) };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException | undefined)?.code !== 'EEXIST') throw error;
+      }
+    }
+    throw new ExtractionError(
+      `${file.path}: ${MAX_NAME_ATTEMPTS} candidate file names are all taken in the output folder (starting at ${planned.path}).`,
+    );
   }
 
   status(): {
