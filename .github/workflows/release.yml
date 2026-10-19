@@ -32,7 +32,9 @@ env:
 jobs:
   build:
     name: Verify and pack
-    runs-on: ubuntu-24.04
+    # The server only starts on Windows and macOS (Roblox Studio's platforms),
+    # and verify ends with a stdio smoke test that starts it.
+    runs-on: macos-26
     timeout-minutes: 20
     permissions:
       contents: read
