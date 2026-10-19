@@ -1,16 +1,27 @@
-import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { FsSnapshotStore, STAGING_PREFIX } from '../../src/adapters/fs-snapshot-store.js';
 import { RobloxService, RobloxServiceError } from '../../src/application/roblox-service.js';
-import { clearPreviousExtraction, writeIntoOutDir } from '../../src/composition.js';
 import { ExtractionError, SENTINEL } from '../../src/domain/extraction.js';
 import type { AssetRecord, CleanupOutcome, StudioSnapshot } from '../../src/domain/contracts.js';
 import type { OpenCloud } from '../../src/ports/open-cloud.js';
+import type { CommittedSnapshot, SnapshotPlan, SnapshotStore } from '../../src/ports/snapshot-store.js';
 import type { ConnectedStudio, StudioBridge } from '../../src/ports/studio-bridge.js';
 import type { StudioHost } from '../../src/ports/studio-host.js';
+
+/** 每個 payload 裡那把 buffer key。 */
+function bufferKeyOf(code: string): string {
+  const key = /RBXEXTRACT_[0-9a-f]{32}/.exec(code)?.[0];
+  if (key === undefined) throw new Error(`payload has no buffer key: ${code.slice(0, 80)}`);
+  return key;
+}
+
+/** 釋放 payload 的回傳以這個開頭；其他 payload 都不會出現這一句。 */
+const RELEASE_MARKER = 'return "released';
 
 /** 假橋：照 Luau 內容決定要回什麼，並記錄有沒有被關閉。 */
 class FakeBridge implements StudioBridge {
@@ -53,7 +64,7 @@ class FakeBridge implements StudioBridge {
       const payload = bytes.subarray(start - 1, end).toString('utf8');
       return `<<<AT|${end}>>>${payload}${SENTINEL}`;
     }
-    if (code.includes('= nil')) {
+    if (code.includes(RELEASE_MARKER)) {
       this.calls.push('release');
       this.buffer = '';
       return `released${SENTINEL}`;
@@ -98,7 +109,6 @@ function makeService(): RobloxService {
     version: '0.1.0',
     allowedUploadRoots: [],
     bridge,
-    writeFile: async (_outDir, relativePath) => relativePath,
   });
 }
 
@@ -218,10 +228,7 @@ class KeyedBridge implements StudioBridge {
   }
 
   static keyOf(code: string): string {
-    const match = /shared(?:\.([A-Za-z_]\w*)|\[\s*"([^"]+)"\s*\])/.exec(code);
-    const key = match?.[1] ?? match?.[2];
-    if (key === undefined) throw new Error(`payload has no shared buffer key: ${code.slice(0, 80)}`);
-    return key;
+    return bufferKeyOf(code);
   }
 
   async listStudios(): Promise<readonly ConnectedStudio[]> {
@@ -242,7 +249,7 @@ class KeyedBridge implements StudioBridge {
       const end = Math.min(start + this.sliceCap - 1, bytes.length);
       return `<<<AT|${end}>>>${bytes.subarray(start - 1, end).toString('utf8')}${SENTINEL}`;
     }
-    if (code.includes('= nil')) {
+    if (code.includes(RELEASE_MARKER)) {
       const key = KeyedBridge.keyOf(code);
       this.keys.release.push(key);
       this.buffers.delete(key);
@@ -268,21 +275,25 @@ class KeyedBridge implements StudioBridge {
   async close(): Promise<void> {}
 }
 
-type OutDirWriter = (outDir: string, relativePath: string, content: string) => Promise<string>;
+/** 不碰磁碟的快照層：照名稱表的第一個名字記下每份腳本的內容。 */
+class RecordingStore implements SnapshotStore {
+  readonly written = new Map<string, string>();
 
-function keyedService(
-  keyed: KeyedBridge,
-  writeFile: OutDirWriter = async (_outDir, relativePath) => relativePath,
-  prepareOutDir?: (outDir: string) => Promise<void>,
-): RobloxService {
+  async commit(_outDir: string, plan: SnapshotPlan): Promise<CommittedSnapshot> {
+    const files = plan.scripts.map((script) => script.target.path);
+    for (const [i, script] of plan.scripts.entries()) this.written.set(files[i] ?? '', script.content);
+    return { files, written: files };
+  }
+}
+
+function keyedService(keyed: KeyedBridge, snapshots: SnapshotStore = new RecordingStore()): RobloxService {
   return new RobloxService({
     studio: noopHost,
     openCloud: noopCloud,
     version: '0.1.0',
     allowedUploadRoots: [],
     bridge: keyed,
-    writeFile,
-    ...(prepareOutDir === undefined ? {} : { prepareOutDir }),
+    snapshots,
   });
 }
 
@@ -314,11 +325,9 @@ describe('🔴 重疊的呼叫各用各的 Lua buffer', () => {
       { path: 'ServerScriptService/Main', className: 'Script', source: 'print("main")' },
       { path: 'ReplicatedStorage/Util', className: 'ModuleScript', source: 'return {}' },
     ]);
-    const written = new Map<string, string>();
-    const service = keyedService(keyed, async (_outDir, relativePath, content) => {
-      written.set(relativePath, content);
-      return relativePath;
-    });
+    const store = new RecordingStore();
+    const written = store.written;
+    const service = keyedService(keyed, store);
     const [extract, run] = await Promise.allSettled([
       service.extractPlace({ placeId: '1', outDir: 'out' }),
       service.runLuau({ placeId: '1', code: 'return "alpha"' }),
@@ -347,7 +356,7 @@ describe('🔴 extractPlace 的檔名碰撞', () => {
       const keyed = new KeyedBridge(1);
       keyed.sliceCap = 60_000;
       keyed.stream = streamOf(scripts);
-      const outcome = await keyedService(keyed, writeIntoOutDir).extractPlace({ placeId: '1', outDir });
+      const outcome = await keyedService(keyed, new FsSnapshotStore()).extractPlace({ placeId: '1', outDir });
 
       const index = JSON.parse(await readFile(join(outDir, 'scene', 'scripts.json'), 'utf8')) as {
         scripts: { path: string; file: string }[];
@@ -379,12 +388,16 @@ describe('🔴 extractPlace 的檔名碰撞', () => {
 
 type ScriptSpec = { path: string; className: string; source: string };
 
-/** 用正式的寫檔與清理（composition 接的那兩個）抽一次，回傳 scripts.json 記下的實際路徑。 */
-async function extractInto(outDir: string, scripts: readonly ScriptSpec[]): Promise<string[]> {
+/** 用正式的快照層（composition 接的那個）抽一次，回傳 scripts.json 記下的實際路徑。 */
+async function extractInto(
+  outDir: string,
+  scripts: readonly ScriptSpec[],
+  store: SnapshotStore = new FsSnapshotStore(),
+): Promise<string[]> {
   const keyed = new KeyedBridge(1);
   keyed.sliceCap = 60_000;
   keyed.stream = streamOf(scripts);
-  await keyedService(keyed, writeIntoOutDir, clearPreviousExtraction).extractPlace({ placeId: '1', outDir });
+  await keyedService(keyed, store).extractPlace({ placeId: '1', outDir });
   const index = JSON.parse(await readFile(join(outDir, 'scene', 'scripts.json'), 'utf8')) as {
     scripts: { path: string; file: string }[];
   };
@@ -489,5 +502,229 @@ describe('🔴 extractPlace 不覆蓋任何既有檔案', () => {
     ).rejects.toThrow(/scene\/scripts\.json/);
     expect(await readFile(join(base, 'outside.luau'), 'utf8')).toBe('outside');
     expect(await readFile(join(outDir, 'src', 'Keep.luau'), 'utf8')).toBe('keep');
+  });
+});
+
+/** outDir/src 底下所有檔案的相對路徑（`/` 分隔），排序過。 */
+async function listSnapshotFiles(outDir: string): Promise<string[]> {
+  const entries = await readdir(join(outDir, 'src'), { recursive: true, withFileTypes: true });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name).slice(outDir.length + 1).split(/[\\/]/).join('/'))
+    .sort();
+}
+
+const stagingLeftovers = async (outDir: string): Promise<string[]> =>
+  (await readdir(outDir)).filter((name) => name.startsWith(STAGING_PREFIX));
+
+describe('🔴 新快照寫完才換掉上一次的', () => {
+  let base: string;
+  let outDir: string;
+
+  beforeEach(async () => {
+    base = await mkdtemp(join(tmpdir(), 'studio-sidecar-swap-'));
+    outDir = join(base, 'out');
+  });
+
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  it('寫到一半失敗時上一次的快照原樣留著，也不留暫存目錄', async () => {
+    await extractInto(outDir, [{ path: 'ServerScriptService/Main', className: 'Script', source: 'print("v1")' }]);
+    const before = {
+      main: await readFile(join(outDir, 'src', 'ServerScriptService', 'Main.server.luau'), 'utf8'),
+      manifest: await readFile(join(outDir, 'scene', 'scripts.json'), 'utf8'),
+      place: await readFile(join(outDir, 'scene', 'place.json'), 'utf8'),
+    };
+    // 使用者在下一次需要資料夾的地方放了一個檔：寫到 ReplicatedStorage/Util 時一定失敗。
+    await writeFile(join(outDir, 'src', 'ReplicatedStorage'), 'not a folder');
+
+    await expect(
+      extractInto(outDir, [
+        { path: 'ServerScriptService/Main', className: 'Script', source: 'print("v2")' },
+        { path: 'ReplicatedStorage/Util', className: 'ModuleScript', source: 'return {}' },
+      ]),
+    ).rejects.toThrow();
+
+    expect(await readFile(join(outDir, 'src', 'ServerScriptService', 'Main.server.luau'), 'utf8')).toBe(before.main);
+    expect(await readFile(join(outDir, 'scene', 'scripts.json'), 'utf8')).toBe(before.manifest);
+    expect(await readFile(join(outDir, 'scene', 'place.json'), 'utf8')).toBe(before.place);
+    expect(await readFile(join(outDir, 'src', 'ReplicatedStorage'), 'utf8')).toBe('not a folder');
+    expect(await listSnapshotFiles(outDir)).toEqual(['src/ReplicatedStorage', 'src/ServerScriptService/Main.server.luau']);
+    expect(await stagingLeftovers(outDir)).toEqual([]);
+  });
+
+  it('成功後也不留暫存目錄', async () => {
+    await extractInto(outDir, [{ path: 'ServerScriptService/Main', className: 'Script', source: 'print(1)' }]);
+    await extractInto(outDir, [{ path: 'ServerScriptService/Main', className: 'Script', source: 'print(2)' }]);
+    expect(await stagingLeftovers(outDir)).toEqual([]);
+    expect((await stat(join(outDir, 'src', 'ServerScriptService', 'Main.server.luau'))).nlink).toBe(1);
+  });
+
+  it('不支援硬連結的檔案系統改用獨佔建立，結果一樣', async () => {
+    const noLinks = new FsSnapshotStore({
+      link: async () => {
+        throw Object.assign(new Error('hard links are not supported here'), { code: 'EPERM' });
+      },
+    });
+    const scripts = [
+      { path: 'ServerScriptService/Main', className: 'Script', source: 'print("v1")' },
+      { path: 'ServerScriptService/Main', className: 'Script', source: 'print("twin")' },
+    ];
+    expect(await extractInto(outDir, scripts, noLinks)).toEqual([
+      'src/ServerScriptService/Main.server.luau',
+      'src/ServerScriptService/Main~2.server.luau',
+    ]);
+    const again = await extractInto(outDir, [scripts[0] as ScriptSpec], noLinks);
+    expect(again).toEqual(['src/ServerScriptService/Main.server.luau']);
+    expect(await listSnapshotFiles(outDir)).toEqual(['src/ServerScriptService/Main.server.luau']);
+    expect(await stagingLeftovers(outDir)).toEqual([]);
+  });
+});
+
+describe('🔴 同一個輸出目錄的抽取依序進行', () => {
+  it('同時抽兩次：最後只有一份快照，scripts.json 列的就是磁碟上的全部，沒有 ~2', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'studio-sidecar-queue-'));
+    const outDir = join(base, 'out');
+    try {
+      const store = new FsSnapshotStore();
+      const run = (source: string): Promise<unknown> => {
+        const keyed = new KeyedBridge(1);
+        keyed.sliceCap = 60_000;
+        keyed.stream = streamOf([
+          { path: 'ServerScriptService/Main', className: 'Script', source },
+          { path: 'ReplicatedStorage/Util', className: 'ModuleScript', source: `return "${source}"` },
+        ]);
+        return keyedService(keyed, store).extractPlace({ placeId: '1', outDir });
+      };
+      const results = await Promise.allSettled([run('first'), run('second')]);
+      expect(results.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled']);
+
+      const index = JSON.parse(await readFile(join(outDir, 'scene', 'scripts.json'), 'utf8')) as {
+        scripts: { file: string }[];
+      };
+      const listed = index.scripts.map((entry) => entry.file).sort();
+      expect(listed).toEqual(['src/ReplicatedStorage/Util.luau', 'src/ServerScriptService/Main.server.luau']);
+      expect(await listSnapshotFiles(outDir)).toEqual(listed);
+      // 兩份腳本來自同一次抽取。
+      const main = await readFile(join(outDir, 'src', 'ServerScriptService', 'Main.server.luau'), 'utf8');
+      expect(await readFile(join(outDir, 'src', 'ReplicatedStorage', 'Util.luau'), 'utf8')).toBe(`return "${main}"`);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('extractPlace 遇到硬連結', () => {
+  let base: string;
+  let outDir: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    base = await mkdtemp(join(tmpdir(), 'studio-sidecar-hardlink-'));
+    outDir = join(base, 'out');
+    outside = join(base, 'outside.txt');
+    await writeFile(outside, 'keep me');
+  });
+
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  it('上一次的檔被換成指到外面的硬連結：只拿掉這個名字，外面的內容不變，新檔是另一個檔案', async () => {
+    const [first] = await extractInto(outDir, [{ path: 'ServerScriptService/Main', className: 'Script', source: 'print(1)' }]);
+    const target = join(outDir, ...(first ?? '').split('/'));
+    await rm(target);
+    await link(outside, target);
+
+    await extractInto(outDir, [{ path: 'ServerScriptService/Main', className: 'Script', source: 'print(2)' }]);
+    expect(await readFile(outside, 'utf8')).toBe('keep me');
+    expect((await stat(outside)).nlink).toBe(1);
+    expect(await readFile(target, 'utf8')).toBe('print(2)');
+    expect((await stat(target)).nlink).toBe(1);
+  });
+
+  it('別人的硬連結占著名字：不寫進去，新的腳本改用 ~2', async () => {
+    await mkdir(join(outDir, 'src', 'ServerScriptService'), { recursive: true });
+    await link(outside, join(outDir, 'src', 'ServerScriptService', 'Main.server.luau'));
+
+    const files = await extractInto(outDir, [{ path: 'ServerScriptService/Main', className: 'Script', source: 'print(1)' }]);
+    expect(files).toEqual(['src/ServerScriptService/Main~2.server.luau']);
+    expect(await readFile(outside, 'utf8')).toBe('keep me');
+    expect(await readFile(join(outDir, 'src', 'ServerScriptService', 'Main.server.luau'), 'utf8')).toBe('keep me');
+  });
+});
+
+/** 第一次釋放失敗的假橋；記下每一把建立與釋放過的 key。 */
+class FlakyReleaseBridge extends FakeBridge {
+  failReleases = 1;
+  releaseAttempts = 0;
+  readonly created: string[] = [];
+  readonly released: string[] = [];
+
+  override async executeLuau(studioId: string, code: string): Promise<string> {
+    if (code.includes(RELEASE_MARKER)) {
+      this.releaseAttempts += 1;
+      if (this.failReleases > 0) {
+        this.failReleases -= 1;
+        throw new Error('execute_luau timed out');
+      }
+      this.released.push(bufferKeyOf(code));
+    } else if (code.includes('!!LUAU_ERROR!!')) {
+      this.created.push(bufferKeyOf(code));
+    }
+    return await super.executeLuau(studioId, code);
+  }
+}
+
+describe('🔴 釋放失敗的 buffer 不會一直留著', () => {
+  function flakyService(flaky: FlakyReleaseBridge, logs: string[] = []): RobloxService {
+    return new RobloxService({
+      studio: noopHost,
+      openCloud: noopCloud,
+      version: '0.1.0',
+      allowedUploadRoots: [],
+      bridge: flaky,
+      log: (level, message) => {
+        logs.push(`${level}: ${message}`);
+      },
+    });
+  }
+
+  it('下一次呼叫碰到同一個 Studio 時補釋放', async () => {
+    const flaky = new FlakyReleaseBridge();
+    const service = flakyService(flaky);
+    await service.runLuau({ placeId: '1', code: 'return "x"' });
+    expect(flaky.released).toEqual([]);
+
+    await service.runLuau({ placeId: '1', code: 'return "y"' });
+    expect(flaky.created).toHaveLength(2);
+    expect([...flaky.released].sort()).toEqual([...flaky.created].sort());
+  });
+
+  it('一直釋放不掉就在幾次之後放手，不會每次呼叫都重試下去', async () => {
+    const flaky = new FlakyReleaseBridge();
+    flaky.failReleases = Number.POSITIVE_INFINITY;
+    const logs: string[] = [];
+    const service = flakyService(flaky, logs);
+    await service.runLuau({ placeId: '1', code: 'return "x"' });
+    for (let i = 0; i < 6; i += 1) await service.guardPlace('1');
+    // 呼叫結束時一次，之後補兩次，然後放手。
+    expect(flaky.releaseAttempts).toBe(3);
+    expect(logs.filter((line) => /gave up/.test(line))).toHaveLength(1);
+  });
+
+  it('那個 Studio 不在連線清單裡了就不再補', async () => {
+    const flaky = new FlakyReleaseBridge();
+    const service = flakyService(flaky);
+    await service.runLuau({ placeId: '1', code: 'return "x"' });
+    flaky.studios = [{ id: 's3', name: 'Reopened' }];
+    flaky.matching = 's3';
+    await service.guardPlace('1');
+    flaky.studios = [{ id: 's2', name: 'Target' }];
+    flaky.matching = 's2';
+    await service.guardPlace('1');
+    expect(flaky.released).toEqual([]);
   });
 });

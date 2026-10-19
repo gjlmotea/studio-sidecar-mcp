@@ -170,24 +170,51 @@ export function fileNameFor(path: string, className: string): string {
   return `${path.slice(path.lastIndexOf('/') + 1)}${scriptExtension(className)}`;
 }
 
+/** 在 Windows 或 POSIX 不能出現在檔名裡的字元。 */
+const FORBIDDEN_CHARS = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
+
 /**
- * 把 DataModel 路徑裡不能當檔名的東西換掉。
+ * 只處理字元層級的問題：禁用字元與控制字元換成 `_`、去掉結尾的點與空白、`.`／`..`／空字串變成 `_`。
  *
- * 🔴 Roblox 的實例名稱幾乎沒有限制 —— 可以叫 `..`、可以含 `:`、可以含路徑分隔符。
- * 直接拿來拼檔案路徑會穿越出輸出目錄。
+ * 0.1.0 寫出的檔名只經過這一層，所以認上一次的 scripts.json 時用它比對（見 `isScriptFilePath`）。
  */
-export function sanitizeSegment(segment: string): string {
+function cleanSegment(segment: string): string {
   // 只換掉在 Windows 或 POSIX 真的不能當檔名的字元。空白與連字號是合法的，
   // 換掉只會讓快照的檔名跟 DataModel 的實例名對不起來。
   // 用明確字元集而不是正規表示式字面值 —— 這串要跳脫的東西太多，寫錯不會報錯只會靜默漏掉。
-  const FORBIDDEN = new Set(['<', '>', ':', '"', '/', '\\', '|', '?', '*']);
   const cleaned = [...segment]
-    .map((char) => (FORBIDDEN.has(char) || char.charCodeAt(0) < 0x20 ? '_' : char))
+    .map((char) => (FORBIDDEN_CHARS.has(char) || char.charCodeAt(0) < 0x20 ? '_' : char))
     .join('')
     // Windows 不允許檔名以點或空白結尾。
     .replace(/[. ]+$/, '');
   if (cleaned === '' || cleaned === '.' || cleaned === '..') return '_';
   return cleaned;
+}
+
+/**
+ * Windows 的保留裝置名，不分大小寫。第一個點之前的部分（去掉結尾空白）等於其中之一就是裝置：
+ * `CON.server.luau` 開的是主控台，`NUL.luau` 寫進去的東西直接消失，而且不會報錯。
+ * 清單照 Microsoft 的〈Naming Files, Paths, and Namespaces〉，含上標數字的 COM／LPT。
+ */
+const WINDOWS_RESERVED = new Set([
+  'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$',
+  ...['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '¹', '²', '³'].flatMap((n) => [`COM${n}`, `LPT${n}`]),
+]);
+
+/**
+ * 把 DataModel 路徑裡不能當檔名的東西換掉。
+ *
+ * 🔴 Roblox 的實例名稱幾乎沒有限制 —— 可以叫 `..`、可以含 `:`、可以含路徑分隔符，也可以叫 `CON`。
+ * 直接拿來拼檔案路徑會穿越出輸出目錄，或在 Windows 上寫進裝置。
+ * 保留名在裝置名後面補 `_`（`CON.server.luau` → `CON_.server.luau`）。在每個平台都這樣做，
+ * 同一份 place 在 macOS 與 Windows 抽出來的檔名才一樣，快照搬到 Windows 也打得開。
+ */
+export function sanitizeSegment(segment: string): string {
+  const cleaned = cleanSegment(segment);
+  const dot = cleaned.indexOf('.');
+  const base = dot === -1 ? cleaned : cleaned.slice(0, dot);
+  if (!WINDOWS_RESERVED.has(base.trimEnd().toUpperCase())) return cleaned;
+  return `${base}_${cleaned.slice(base.length)}`;
 }
 
 /** Windows 與 macOS 預設的檔案系統不分大小寫，比對檔名一律用這個。 */
@@ -275,13 +302,18 @@ export const EXTRACTED_BY = 'studio-sidecar extract_place (read-only)';
 /** 每次抽取都會寫的兩個 scene 檔。名字固定，下一次靠 scripts.json 找到上一次寫了什麼。 */
 export const SCENE_FILES = ['scene/place.json', 'scene/scripts.json'] as const;
 
-/** 本工具寫得出來的腳本路徑：`src/` 底下、`.luau` 結尾、每一段都是清理過的名字。 */
+/**
+ * 本工具寫得出來的腳本路徑：`src/` 底下、`.luau` 結尾、每一段都是清理過的名字。
+ *
+ * 比對用字元層級的清理而不是 `sanitizeSegment`：0.1.0 還沒有避開 Windows 保留名，
+ * 它在 macOS 寫出的 `CON.luau` 仍是本工具的檔，換新版重跑時要認得、刪得掉。
+ */
 function isScriptFilePath(file: string): boolean {
   const segments = file.split('/');
   return segments.length >= 2
     && segments[0] === 'src'
     && file.endsWith('.luau')
-    && segments.every((segment) => segment !== '' && sanitizeSegment(segment) === segment);
+    && segments.every((segment) => segment !== '' && cleanSegment(segment) === segment);
 }
 
 /**

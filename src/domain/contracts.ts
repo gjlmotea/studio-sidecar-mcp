@@ -21,9 +21,15 @@ export type AssetRecord = {
   readonly state: string | undefined;
 };
 
+/**
+ * 上傳的內容是已經讀好的位元組，不是路徑：路徑在服務層驗過、從同一個 handle 讀出來，
+ * 送出去之前不再經過檔案系統（見 RobloxService 的 `#readUploadSource`）。
+ */
 export type UploadRequest = {
   readonly assetType: AssetType;
-  readonly filePath: string;
+  /** multipart 裡的檔名；Content-Type 也依它的副檔名決定。 */
+  readonly fileName: string;
+  readonly content: Uint8Array;
   readonly displayName: string;
   readonly description: string;
   readonly creatorUserId: string;
@@ -31,7 +37,8 @@ export type UploadRequest = {
 
 export type UpdateRequest = {
   readonly assetId: string;
-  readonly filePath: string;
+  readonly fileName: string;
+  readonly content: Uint8Array;
   readonly assetType: AssetType;
 };
 

@@ -1,5 +1,6 @@
-import { realpathSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { constants } from 'node:fs';
+import { open, realpath, stat, type FileHandle } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
 
 import { assertArchivable, inferAssetType, type AssetType } from '../domain/asset-types.js';
 import {
@@ -10,9 +11,9 @@ import {
   planScriptTargets,
   unwrapChunk,
   type ExtractedFile,
-  type ScriptTarget,
 } from '../domain/extraction.js';
 import {
+  BUFFER_IDLE_SECONDS,
   buildScriptStreamLuau,
   LUAU_ERROR_PREFIX,
   newBufferKey,
@@ -25,7 +26,8 @@ import {
 } from '../domain/luau-payloads.js';
 import { isPathInside } from '../domain/path-containment.js';
 import { log as defaultLog } from '../logger.js';
-import { StudioBridgeClosedError, type StudioBridge } from '../ports/studio-bridge.js';
+import type { SnapshotStore } from '../ports/snapshot-store.js';
+import { StudioBridgeClosedError, type ConnectedStudio, type StudioBridge } from '../ports/studio-bridge.js';
 import type {
   AssetRecord,
   CleanupOutcome,
@@ -38,8 +40,11 @@ import { classifyUpdate, type UpdateOutcome } from '../domain/revision.js';
 import type { OpenCloud } from '../ports/open-cloud.js';
 import type { StudioHost } from '../ports/studio-host.js';
 
-/** 一份腳本在輸出目錄裡最多試幾個名字。 */
-const MAX_NAME_ATTEMPTS = 1_000;
+/**
+ * 一把沒釋放掉的 buffer key 最多補釋放幾次。之後放棄，交給 Studio 端的到期清理
+ * （`BUFFER_IDLE_SECONDS`）。
+ */
+const MAX_RELEASE_ATTEMPTS = 3;
 
 export class RobloxServiceError extends Error {
   constructor(message: string) {
@@ -59,13 +64,8 @@ export type RobloxServiceOptions = {
   readonly now?: () => number;
   /** 連到內建 Studio MCP 的橋；抽取功能需要它。 */
   readonly bridge?: StudioBridge;
-  /**
-   * 寫檔；路徑相對於抽取的輸出目錄，回傳實際寫入的路徑。
-   * 目標已經存在時不可覆蓋，要以 `code: 'EEXIST'` 失敗，抽取會改用下一個名字。
-   */
-  readonly writeFile?: (outDir: string, relativePath: string, content: string) => Promise<string>;
-  /** 落檔前整理輸出目錄（清掉上一次抽取寫的檔）。 */
-  readonly prepareOutDir?: (outDir: string) => Promise<void>;
+  /** 把抽取結果寫成輸出目錄裡的快照；抽取功能需要它。 */
+  readonly snapshots?: SnapshotStore;
   /** 診斷訊息；預設寫 stderr。 */
   readonly log?: typeof defaultLog;
 };
@@ -120,9 +120,10 @@ export class RobloxService {
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #now: () => number;
   readonly #bridge: StudioBridge | undefined;
-  readonly #writeFile: RobloxServiceOptions['writeFile'];
-  readonly #prepareOutDir: RobloxServiceOptions['prepareOutDir'];
+  readonly #snapshots: SnapshotStore | undefined;
   readonly #log: typeof defaultLog;
+  /** 釋放失敗、等下一次呼叫補釋放的 buffer：studioId → key → 已經試過幾次。 */
+  readonly #unreleased = new Map<string, Map<string, number>>();
 
   constructor(options: RobloxServiceOptions) {
     this.#studio = options.studio;
@@ -133,8 +134,7 @@ export class RobloxService {
     this.#sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.#now = options.now ?? Date.now;
     this.#bridge = options.bridge;
-    this.#writeFile = options.writeFile;
-    this.#prepareOutDir = options.prepareOutDir;
+    this.#snapshots = options.snapshots;
     this.#log = options.log ?? defaultLog;
   }
 
@@ -156,6 +156,7 @@ export class RobloxService {
     placeId: string,
   ): Promise<{ readonly id: string; readonly name: string; readonly gameId: string }> {
     const studios = await bridge.listStudios();
+    this.#forgetGoneStudios(studios);
     if (studios.length === 0) {
       throw new RobloxServiceError(
         'No Studio is connected. Open the target place first (you can use roblox_open_place).',
@@ -165,6 +166,7 @@ export class RobloxService {
       const raw = await bridge.executeLuau(studio.id, placeGuardLuau(placeId));
       const body = unwrapChunk(raw, `placeId guard (${studio.name})`);
       if (/match=true/.test(body)) {
+        await this.#retryReleases(bridge, studio.id);
         return { ...studio, gameId: /gameId=(\d+)/.exec(body)?.[1] ?? '0' };
       }
     }
@@ -222,8 +224,9 @@ export class RobloxService {
    * 橋的生命週期屬於整個 server（`closeBridge()` 在關機時呼叫），
    * 這樣既避開那個競爭，也少生一大堆 stub。
    *
-   * 關機途中橋會拒絕連線，這一步就跳過：為了釋放 buffer 再開一條 StudioMCP 正是會漏 stub 的那種事。
-   * 沒釋放的 key 會留在 Studio 的 `shared` 裡，沒有重試也沒有過期（README 的已知限制）。
+   * 釋放失敗時記下這把 key，下一次呼叫碰到同一個 Studio 時補釋放（`#retryReleases`）。
+   * 關機途中橋會拒絕連線，這一步就跳過、也不排補釋放：為了釋放 buffer 再開一條 StudioMCP
+   * 正是會漏 stub 的那種事。這兩種情況最後都由 Studio 端的到期清理收尾（`BUFFER_IDLE_SECONDS`）。
    */
   async #releaseBuffer(bridge: StudioBridge, key: string, studioId?: string): Promise<void> {
     if (studioId === undefined) return;
@@ -232,13 +235,55 @@ export class RobloxService {
     } catch (error) {
       // 釋放失敗不該蓋掉真正的錯誤，只記一行。
       if (error instanceof StudioBridgeClosedError) {
-        this.#log('info', 'Luau buffer release skipped: the Studio bridge is shut down', { key });
-      } else {
-        this.#log('error', 'Luau buffer release failed', {
+        this.#log('info', 'Luau buffer release skipped: the Studio bridge is shut down', {
           key,
-          detail: error instanceof Error ? error.message : String(error),
+          expiresAfterIdleSeconds: BUFFER_IDLE_SECONDS,
         });
+        return;
       }
+      const pending = this.#unreleased.get(studioId) ?? new Map<string, number>();
+      pending.set(key, 1);
+      this.#unreleased.set(studioId, pending);
+      this.#log('error', 'Luau buffer release failed; retrying on the next call to this Studio', {
+        key,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * 補釋放之前沒放掉的 buffer。只在正常的工具呼叫裡、已經連上同一個 Studio 時做，
+   * 失敗不影響這次呼叫；試滿 `MAX_RELEASE_ATTEMPTS` 次就放棄，交給 Studio 端的到期清理。
+   */
+  async #retryReleases(bridge: StudioBridge, studioId: string): Promise<void> {
+    const pending = this.#unreleased.get(studioId);
+    if (pending === undefined) return;
+    for (const [key, attempts] of [...pending]) {
+      try {
+        await bridge.executeLuau(studioId, releaseBufferLuau(key));
+        pending.delete(key);
+      } catch (error) {
+        if (error instanceof StudioBridgeClosedError) return;
+        if (attempts + 1 >= MAX_RELEASE_ATTEMPTS) {
+          pending.delete(key);
+          this.#log('error', 'Luau buffer release gave up; Studio drops the buffer once it has been idle long enough', {
+            key,
+            attempts: attempts + 1,
+            expiresAfterIdleSeconds: BUFFER_IDLE_SECONDS,
+          });
+        } else {
+          pending.set(key, attempts + 1);
+        }
+      }
+    }
+    if (pending.size === 0) this.#unreleased.delete(studioId);
+  }
+
+  /** 不在連線清單裡的 Studio，它的 `shared` 已經不在或連不到，記著的 key 也不用補了。 */
+  #forgetGoneStudios(studios: readonly ConnectedStudio[]): void {
+    const alive = new Set(studios.map((studio) => studio.id));
+    for (const studioId of [...this.#unreleased.keys()]) {
+      if (!alive.has(studioId)) this.#unreleased.delete(studioId);
     }
   }
 
@@ -325,9 +370,9 @@ export class RobloxService {
    */
   async extractPlace(options: ExtractOptions): Promise<ExtractOutcome> {
     const bridge = this.#bridge;
-    const writeFile = this.#writeFile;
-    if (bridge === undefined || writeFile === undefined) {
-      throw new RobloxServiceError('Extraction is not wired up (the Studio bridge or the file writer is missing).');
+    const snapshots = this.#snapshots;
+    if (bridge === undefined || snapshots === undefined) {
+      throw new RobloxServiceError('Extraction is not wired up (the Studio bridge or the snapshot writer is missing).');
     }
     const chunkBytes = options.chunkBytes ?? DEFAULT_CHUNK_BYTES;
     const key = newBufferKey();
@@ -365,34 +410,27 @@ export class RobloxService {
       const meta = unwrapChunk(metaRaw, 'place settings');
 
       // ── 5. 落檔 ────────────────────────────────────────────────────
-      // 先清掉上一次抽取寫的檔（只有那些），再全部獨佔建立。
-      await this.#prepareOutDir?.(options.outDir);
-      // 名稱表先整份排好再寫：清理後同名、只差大小寫、兄弟同名都會互相覆蓋。
-      // 磁碟上撞名時改用下一個名字，scripts.json 記實際寫入的路徑。
+      // 名稱表先整份排好：清理後同名、只差大小寫、兄弟同名都會互相覆蓋。
+      // 磁碟上撞名時快照層改用下一個名字，scripts.json 記實際寫入的路徑。
+      // 新快照整份寫完才換掉上一次的，同一個輸出目錄的抽取依序進行（見 FsSnapshotStore）。
       const targets = planScriptTargets(files);
-      const written: string[] = [];
-      const index: { path: string; className: string; file: string; bytes: number }[] = [];
-      for (const [i, file] of files.entries()) {
-        const planned = targets[i];
-        if (planned === undefined) throw new ExtractionError(`No output path was planned for ${file.path}.`);
-        const { relative, absolute } = await this.#writeFirstFree(writeFile, options.outDir, planned, file);
-        written.push(absolute);
-        index.push({
-          path: file.path,
-          className: file.className,
-          file: relative,
-          bytes: file.declaredBytes,
-        });
-      }
-
-      written.push(await writeFile(options.outDir, 'scene/place.json', `${meta}\n`));
-      written.push(
-        await writeFile(
-          options.outDir,
-          'scene/scripts.json',
-          `${JSON.stringify({ extractedBy: EXTRACTED_BY, scriptCount, totalBytes, scripts: index }, null, 2)}\n`,
-        ),
-      );
+      const { written } = await snapshots.commit(options.outDir, {
+        scripts: files.map((file, i) => {
+          const target = targets[i];
+          if (target === undefined) throw new ExtractionError(`No output path was planned for ${file.path}.`);
+          return { target, content: file.source };
+        }),
+        place: `${meta}\n`,
+        manifest: (paths) => {
+          const scripts = files.map((file, i) => ({
+            path: file.path,
+            className: file.className,
+            file: paths[i] ?? '',
+            bytes: file.declaredBytes,
+          }));
+          return `${JSON.stringify({ extractedBy: EXTRACTED_BY, scriptCount, totalBytes, scripts }, null, 2)}\n`;
+        },
+      });
 
       return {
         placeId: options.placeId,
@@ -407,26 +445,6 @@ export class RobloxService {
       // buffer 是 Lua VM 的執行期記憶體，不清會一直佔著。
       await this.#releaseBuffer(bridge, key, studioId);
     }
-  }
-
-  /** 依序試名稱表的名字與它的後備名字，寫進第一個磁碟上還沒被占用的。 */
-  async #writeFirstFree(
-    writeFile: NonNullable<RobloxServiceOptions['writeFile']>,
-    outDir: string,
-    planned: ScriptTarget,
-    file: ExtractedFile,
-  ): Promise<{ readonly relative: string; readonly absolute: string }> {
-    for (let attempt = 0; attempt < MAX_NAME_ATTEMPTS; attempt += 1) {
-      const relative = attempt === 0 ? planned.path : planned.fallback(attempt);
-      try {
-        return { relative, absolute: await writeFile(outDir, relative, file.source) };
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException | undefined)?.code !== 'EEXIST') throw error;
-      }
-    }
-    throw new ExtractionError(
-      `${file.path}: ${MAX_NAME_ATTEMPTS} candidate file names are all taken in the output folder (starting at ${planned.path}).`,
-    );
   }
 
   status(): {
@@ -562,8 +580,8 @@ export class RobloxService {
    * 所以請優先用 `roblox_update_asset` 更新既有 assetId，而不是每次都建立新的。
    */
   async uploadAsset(options: UploadOptions): Promise<AssetRecord> {
-    const filePath = this.#resolveUploadPath(options.filePath);
-    const assetType = options.assetType ?? inferAssetType(filePath);
+    const source = await this.#readUploadSource(options.filePath);
+    const assetType = options.assetType ?? inferAssetType(source.path);
     if (assetType === undefined) {
       throw new RobloxServiceError(
         `Cannot infer the asset type from the file extension: ${options.filePath}. Specify assetType explicitly.`,
@@ -577,7 +595,8 @@ export class RobloxService {
     }
     return await this.#openCloud.create({
       assetType,
-      filePath,
+      fileName: basename(source.path),
+      content: source.bytes,
       displayName: options.displayName,
       description: options.description ?? '',
       creatorUserId,
@@ -594,8 +613,8 @@ export class RobloxService {
     readonly asset: AssetRecord;
     readonly outcome: UpdateOutcome;
   }> {
-    const filePath = this.#resolveUploadPath(options.filePath);
-    const assetType = options.assetType ?? inferAssetType(filePath);
+    const source = await this.#readUploadSource(options.filePath);
+    const assetType = options.assetType ?? inferAssetType(source.path);
     if (assetType === undefined) {
       throw new RobloxServiceError(
         `Cannot infer the asset type from the file extension: ${options.filePath}. Specify assetType explicitly.`,
@@ -604,7 +623,8 @@ export class RobloxService {
     const before = await this.#openCloud.get(options.assetId);
     const asset = await this.#openCloud.updateContent({
       assetId: options.assetId,
-      filePath,
+      fileName: basename(source.path),
+      content: source.bytes,
       assetType,
     });
     return { asset, outcome: classifyUpdate(before.revisionId, asset.revisionId) };
@@ -621,12 +641,19 @@ export class RobloxService {
   }
 
   /**
-   * 把來源路徑限制在允許的根目錄內。
+   * 把來源限制在允許的根目錄內，並讀出要送出去的內容。
    *
    * MCP Client 不該能指定任意檔案路徑 —— 上傳是把本機檔案送到外部服務，
    * 而且對 Model 來說是**不可逆**的。
+   *
+   * 🔴 檢查與讀取之間不能再經過一次路徑：0.1.0 驗完路徑後由 Open Cloud 層照路徑重新打開，
+   * 中間把資料夾換成 symlink 就能讀到允許目錄外的檔。現在只打開一次，驗的與讀的是同一個 handle：
+   * 打開後再解析一次路徑，確認它仍在允許目錄內、而且指向同一個檔案（裝置＋inode），內容只從這個 handle 讀。
+   *
+   * 🔴 硬連結（連結數大於 1）一律拒絕：硬連結沒有「指向哪裡」可以解析，允許目錄裡的一個硬連結
+   * 可以就是外面某個檔案本身，realpath 看不出來。
    */
-  #resolveUploadPath(filePath: string): string {
+  async #readUploadSource(filePath: string): Promise<{ readonly path: string; readonly bytes: Uint8Array }> {
     const target = resolve(filePath);
     if (this.#roots.length === 0) {
       throw new RobloxServiceError(
@@ -641,7 +668,7 @@ export class RobloxService {
     // 只比字面路徑等於讓連結把整台機器的檔案都送出去。
     let real: string;
     try {
-      real = realpathSync.native(target);
+      real = await realpath(target);
     } catch {
       // 只有字面上在允許目錄內才說「不存在」；目錄外一律說不在允許目錄內，
       // 不替呼叫端探測外面有哪些檔案。
@@ -650,20 +677,47 @@ export class RobloxService {
       }
       throw notInside(target);
     }
-    const realRoots = this.#roots.flatMap((root) => {
-      try {
-        return [realpathSync.native(root)];
-      } catch {
-        return []; // 不存在的允許目錄裡不可能有檔案。
-      }
-    });
-    if (!realRoots.some((root) => isPathInside(root, real))) {
+    const realRoots = (await Promise.all(this.#roots.map(async (root) => await realpath(root).catch(() => undefined))))
+      // 不存在的允許目錄裡不可能有檔案。
+      .filter((root): root is string => root !== undefined);
+    const inside = (path: string): boolean => realRoots.some((root) => isPathInside(root, path));
+    if (!inside(real)) {
       throw notInside(real === target ? target : `${target} (resolves to ${real})`);
     }
-    if (!statSync(real).isFile()) {
+    if (!(await stat(real)).isFile()) {
       throw new RobloxServiceError(`Source file is not a regular file: ${target}`);
     }
-    // 回傳解析後的路徑：之後讀檔的就是剛剛驗過的那一個，不再經過連結。
-    return real;
+
+    let handle: FileHandle;
+    try {
+      handle = await open(real, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    } catch (error) {
+      throw new RobloxServiceError(
+        `Could not open the source file, or it changed while it was being checked; nothing was uploaded: ${target} `
+        + `(${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    try {
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isFile()) {
+        throw new RobloxServiceError(`Source file is not a regular file: ${target}`);
+      }
+      if (opened.nlink > 1n) {
+        throw new RobloxServiceError(
+          `Source file has ${opened.nlink} hard links, so it cannot be shown to live only inside the allowed folders; `
+          + `nothing was uploaded. Upload a copy instead: ${target}`,
+        );
+      }
+      // 打開的是剛剛驗過的那一個嗎？再解析一次，比對是不是同一個檔案。
+      const again = await realpath(real).catch(() => undefined);
+      const current = again === undefined ? undefined : await stat(again, { bigint: true }).catch(() => undefined);
+      if (again === undefined || !inside(again) || current === undefined
+        || current.dev !== opened.dev || current.ino !== opened.ino) {
+        throw new RobloxServiceError(`The source file changed while it was being checked; nothing was uploaded: ${target}`);
+      }
+      return { path: real, bytes: await handle.readFile() };
+    } finally {
+      await handle.close();
+    }
   }
 }

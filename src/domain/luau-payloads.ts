@@ -12,6 +12,7 @@ import { SENTINEL } from './extraction.js';
  * - 🔴 **每次呼叫用自己的 buffer 名**（`newBufferKey()`），建立、切片、釋放都帶同一把。
  *   `shared` 是整個 Studio 共用的；固定一個名字時，兩個重疊的呼叫會讀到對方的內容，
  *   長度剛好一樣就照樣回報成功。
+ * - **buffer 會到期**：釋放失敗或關機時跳過的 key 不會永遠留著，見 `BUFFER_IDLE_SECONDS`。
  * - 每一段回傳都以哨兵收尾，讓呼叫端能辨識截斷。
  */
 
@@ -29,6 +30,45 @@ function bufferRef(key: string): string {
     throw new Error(`Invalid buffer key: ${JSON.stringify(key)}`);
   }
   return `shared.${key}`;
+}
+
+/**
+ * buffer 閒置多久之後可以被清掉（秒）。
+ *
+ * 釋放失敗、或關機途中為了不重開 StudioMCP 而跳過釋放時，那把 key 原本會一直留在 Studio 的 `shared` 裡。
+ * 現在每個 buffer 建立時都在 `shared.RBXEXTRACT_EXPIRES` 登記到期時間，每次切片往後延；
+ * 之後任何一次建立 buffer 的呼叫（不管是哪個 Sidecar 行程）都會先清掉已經到期的。
+ * 一次切片的呼叫上限是 180 秒，所以進行中的抽取不會被當成閒置；萬一真的被清掉，
+ * 下一次切片拿不到 buffer 會中止，不會靜默少一段。
+ */
+export const BUFFER_IDLE_SECONDS = 15 * 60;
+
+/** 到期表。名字不符合 buffer key 的格式，不會跟任何一個 buffer 撞名。 */
+const EXPIRES_REF = 'shared.RBXEXTRACT_EXPIRES';
+
+/**
+ * 清掉到期的 buffer，再登記這一個。整段包 pcall：清理出錯也不能擋住真正要做的事。
+ * 只清名字符合 buffer key 格式的項目，到期表被別的程式塞了別的名字也不會誤刪 `shared` 裡其他東西。
+ */
+function registerBufferLuau(key: string): string {
+  bufferRef(key);
+  return `
+pcall(function()
+	local now = os.time()
+	local expires = ${EXPIRES_REF}
+	if type(expires) ~= "table" then
+		expires = {}
+		${EXPIRES_REF} = expires
+	end
+	for name, deadline in pairs(expires) do
+		if type(name) == "string" and string.match(name, "^RBXEXTRACT_%x+$")
+			and (type(deadline) ~= "number" or deadline < now) then
+			shared[name] = nil
+			expires[name] = nil
+		end
+	end
+	expires["${key}"] = now + ${BUFFER_IDLE_SECONDS}
+end)`;
 }
 
 /** 走訪這些 service 底下的腳本。與抽出後 `src/<Service>/…` 的目錄約定一致。 */
@@ -63,7 +103,7 @@ return string.format("placeId=%d expected=%d match=%s gameId=%d", game.PlaceId, 
  */
 export function buildScriptStreamLuau(key: string): string {
   const buffer = bufferRef(key);
-  return `
+  return `${registerBufferLuau(key)}
 local out, count = {}, 0
 local function walk(inst, path)
 	for _, child in ipairs(inst:GetChildren()) do
@@ -99,6 +139,8 @@ export function sliceBufferLuau(key: string, start: number, maxBytes: number): s
   return `
 local s = ${bufferRef(key)}
 if type(s) ~= "string" then return "<<<AT|0>>>" .. "${SENTINEL}" end
+local expires = ${EXPIRES_REF}
+if type(expires) == "table" and expires["${key}"] ~= nil then expires["${key}"] = os.time() + ${BUFFER_IDLE_SECONDS} end
 local start = ${start}
 local finish = math.min(start + ${maxBytes} - 1, #s)
 -- 續接位元組是 0x80–0xBF。若切點的下一個位元組是續接位元組，代表切在字元中間，
@@ -114,9 +156,13 @@ end
 return string.format("<<<AT|%d>>>", finish) .. string.sub(s, start, finish) .. "${SENTINEL}"`;
 }
 
-/** 用完把 buffer 還給 Lua VM。 */
+/** 用完把 buffer 還給 Lua VM，到期表裡的登記也一起拿掉。 */
 export function releaseBufferLuau(key: string): string {
-  return `${bufferRef(key)} = nil return "released${SENTINEL}"`;
+  return `
+${bufferRef(key)} = nil
+local expires = ${EXPIRES_REF}
+if type(expires) == "table" then expires["${key}"] = nil end
+return "released${SENTINEL}"`;
 }
 
 /**
@@ -131,7 +177,7 @@ export function releaseBufferLuau(key: string): string {
  */
 export function runUserLuau(key: string, code: string): string {
   const buffer = bufferRef(key);
-  return `
+  return `${registerBufferLuau(key)}
 local ok, result = pcall(function()
 ${code}
 end)

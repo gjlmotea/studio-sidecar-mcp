@@ -9,6 +9,7 @@ import { RobloxService } from '../../src/application/roblox-service.js';
 import type { AssetRecord, CleanupOutcome, StudioSnapshot } from '../../src/domain/contracts.js';
 import { SENTINEL } from '../../src/domain/extraction.js';
 import type { OpenCloud } from '../../src/ports/open-cloud.js';
+import { StudioBridgeClosedError } from '../../src/ports/studio-bridge.js';
 import type { StudioHost } from '../../src/ports/studio-host.js';
 
 type Deferred<T> = {
@@ -161,7 +162,7 @@ describe('🔴 關機時正在跑的 runLuau', () => {
       if (name === 'list_roblox_studios') return JSON.stringify({ studios: [{ id: 's1', name: 'Target' }] });
       const code = String(args['code']);
       if (code.includes('match=')) return `placeId=1 expected=1 match=true gameId=99${SENTINEL}`;
-      if (code.includes('= nil')) return `released${SENTINEL}`;
+      if (code.includes('return "released')) return `released${SENTINEL}`;
       // 使用者的程式碼還在跑，直到連線被關掉。
       runStarted.resolve();
       return new Promise<string>(() => undefined);
@@ -186,5 +187,9 @@ describe('🔴 關機時正在跑的 runLuau', () => {
     expect(made).toHaveLength(1);
     expect(made[0]?.closed).toBe(1);
     expect(logs).toEqual([expect.stringMatching(/Luau buffer.*shut down/)]);
+
+    // 之後的呼叫也不會為了補釋放把橋接回來。
+    await expect(service.guardPlace('1')).rejects.toThrow(StudioBridgeClosedError);
+    expect(made).toHaveLength(1);
   });
 });

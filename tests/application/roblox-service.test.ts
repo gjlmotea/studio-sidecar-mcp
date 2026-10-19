@@ -1,11 +1,17 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { RobloxService, RobloxServiceError } from '../../src/application/roblox-service.js';
-import type { AssetRecord, CleanupOutcome, StudioSnapshot } from '../../src/domain/contracts.js';
+import type {
+  AssetRecord,
+  CleanupOutcome,
+  StudioSnapshot,
+  UpdateRequest,
+  UploadRequest,
+} from '../../src/domain/contracts.js';
 import type { OpenCloud } from '../../src/ports/open-cloud.js';
 import type { StudioHost } from '../../src/ports/studio-host.js';
 
@@ -81,19 +87,30 @@ class FakeOpenCloud implements OpenCloud {
   current: AssetRecord = record();
   next: AssetRecord | undefined;
   calls: string[] = [];
+  /** 每次上傳實際送出去的內容與檔名。 */
+  sent: { fileName: string; content: string }[] = [];
+  /** 送出之前要做的事；用來模擬檢查完之後路徑才被換掉。 */
+  beforeSend: (() => Promise<void>) | undefined;
+
+  async #send(request: UploadRequest | UpdateRequest): Promise<void> {
+    await this.beforeSend?.();
+    this.sent.push({ fileName: request.fileName, content: Buffer.from(request.content).toString('utf8') });
+  }
 
   async get(): Promise<AssetRecord> {
     this.calls.push('get');
     return this.current;
   }
 
-  async create(): Promise<AssetRecord> {
+  async create(request: UploadRequest): Promise<AssetRecord> {
     this.calls.push('create');
+    await this.#send(request);
     return this.current;
   }
 
-  async updateContent(): Promise<AssetRecord> {
+  async updateContent(request: UpdateRequest): Promise<AssetRecord> {
     this.calls.push('updateContent');
+    await this.#send(request);
     return this.next ?? this.current;
   }
 
@@ -315,6 +332,44 @@ describe('uploadAsset', () => {
     const asset = await service.uploadAsset({ filePath: fbxPath, displayName: 'ProbeCube' });
     expect(asset.assetId).toBe('100000000000001');
     expect(openCloud.calls).toContain('create');
+    expect(openCloud.sent).toEqual([{ fileName: 'cube.fbx', content: '; fbx' }]);
+  });
+
+  it('🔴 硬連結一律拒絕 —— 允許目錄裡的硬連結可以就是外面的檔案本身', async () => {
+    const allowed = join(workDir, 'allowed');
+    const outside = join(workDir, 'outside');
+    await mkdir(allowed);
+    await mkdir(outside);
+    await writeFile(join(outside, 'secret.fbx'), '; private');
+    await link(join(outside, 'secret.fbx'), join(allowed, 'model.fbx'));
+
+    const service = await makeService([allowed]);
+    await expect(
+      service.uploadAsset({ filePath: join(allowed, 'model.fbx'), displayName: 'X' }),
+    ).rejects.toThrow(/hard link/);
+    await expect(
+      service.updateAsset({ assetId: '100000000000001', filePath: join(allowed, 'model.fbx') }),
+    ).rejects.toThrow(/hard link/);
+    expect(openCloud.calls).toEqual([]);
+    expect(openCloud.sent).toEqual([]);
+  });
+
+  it('🔴 檢查完之後路徑才被換成指到外面的 symlink：送出去的仍是檢查過的那個檔', async () => {
+    const allowed = join(workDir, 'allowed');
+    const outside = join(workDir, 'outside');
+    await mkdir(allowed);
+    await mkdir(outside);
+    await writeFile(join(allowed, 'model.fbx'), '; checked');
+    await writeFile(join(outside, 'secret.fbx'), '; private');
+    const swap = async (): Promise<void> => {
+      await rename(join(allowed, 'model.fbx'), join(allowed, 'moved.fbx'));
+      await symlink(join(outside, 'secret.fbx'), join(allowed, 'model.fbx'));
+    };
+
+    const service = await makeService([allowed]);
+    openCloud.beforeSend = swap;
+    await service.uploadAsset({ filePath: join(allowed, 'model.fbx'), displayName: 'X' });
+    expect(openCloud.sent.map((entry) => entry.content)).toEqual(['; checked']);
   });
 });
 

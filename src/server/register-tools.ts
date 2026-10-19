@@ -286,9 +286,11 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
         + 'is capped at 100000 characters and silently truncated beyond that. If any chunk is missing its sentinel, the whole batch aborts, '
         + 'because a partially correct snapshot is more dangerous than a failed extraction (it looks like success). '
         + 'It first asks each connected Studio in turn to verify the placeId, and aborts on a mismatch. '
+        + 'The new snapshot is written in full to a fresh staging folder first; only then are the files of the previous snapshot replaced, '
+        + 'and if that switch fails the previous snapshot is put back. Extractions into the same folder run one after another. '
         + 'It never overwrites a file: when a name is already taken in the folder (including names the file system treats as equal), '
         + 'the script gets the next ~n suffix, and scene/scripts.json records the path actually written. '
-        + 'Re-running into the same folder first deletes the files listed in that folder\'s previous scene/scripts.json, and nothing else; '
+        + 'Re-running into the same folder replaces only the files listed in that folder\'s previous scene/scripts.json; '
         + 'it refuses a folder whose scene/ files were not written by this tool.',
       inputSchema: extractPlaceInputSchema,
       outputSchema: extractPlaceOutputSchema,
@@ -355,7 +357,7 @@ export function registerTools(server: McpServer, { service }: ToolDependencies):
         'Create a new asset through Open Cloud assets/v1 (Model accepts .fbx only, Decal accepts common image formats, Audio accepts mp3/ogg). '
         + 'IMPORTANT: An uploaded Model cannot be deleted or archived on the platform; it can only be removed from your own inventory. '
         + 'So when iterating, use roblox_update_asset to update the existing assetId instead of creating a new asset each time. '
-        + 'The source file must be inside a folder allowed by ROBLOX_UPLOAD_ROOT.',
+        + 'The source file must be a regular file with a single hard link, inside a folder allowed by ROBLOX_UPLOAD_ROOT.',
       inputSchema: uploadAssetInputSchema,
       outputSchema: uploadAssetOutputSchema,
       annotations: {

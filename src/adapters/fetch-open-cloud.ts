@@ -1,6 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { basename } from 'node:path';
-
 import { resolveUpload } from '../domain/asset-types.js';
 import type { AssetRecord, RenameRequest, UpdateRequest, UploadRequest } from '../domain/contracts.js';
 import { OpenCloudError, type OpenCloud } from '../ports/open-cloud.js';
@@ -131,11 +128,11 @@ export class FetchOpenCloud implements OpenCloud {
     return toRecord(operation.response);
   }
 
-  async #multipart(filePath: string, contentType: string, request: object): Promise<FormData> {
-    const bytes = await readFile(filePath);
+  /** 內容由呼叫端給：這一層不碰檔案系統，送出去的就是服務層驗過、讀好的那份位元組。 */
+  #multipart(fileName: string, content: Uint8Array, contentType: string, request: object): FormData {
     const form = new FormData();
     form.set('request', JSON.stringify(request));
-    form.set('fileContent', new Blob([new Uint8Array(bytes)], { type: contentType }), basename(filePath));
+    form.set('fileContent', new Blob([new Uint8Array(content)], { type: contentType }), fileName);
     return form;
   }
 
@@ -145,8 +142,8 @@ export class FetchOpenCloud implements OpenCloud {
   }
 
   async create(request: UploadRequest): Promise<AssetRecord> {
-    const { contentType } = resolveUpload(request.assetType, request.filePath);
-    const form = await this.#multipart(request.filePath, contentType, {
+    const { contentType } = resolveUpload(request.assetType, request.fileName);
+    const form = this.#multipart(request.fileName, request.content, contentType, {
       assetType: request.assetType,
       displayName: request.displayName,
       description: request.description,
@@ -157,8 +154,8 @@ export class FetchOpenCloud implements OpenCloud {
   }
 
   async updateContent(request: UpdateRequest): Promise<AssetRecord> {
-    const { contentType } = resolveUpload(request.assetType, request.filePath);
-    const form = await this.#multipart(request.filePath, contentType, { assetId: request.assetId });
+    const { contentType } = resolveUpload(request.assetType, request.fileName);
+    const form = this.#multipart(request.fileName, request.content, contentType, { assetId: request.assetId });
     // ⚠ 換內容**不要**帶 updateMask：`updateMask=fileContent` 會回
     // `INVALID_ARGUMENT — Unknown field file_content`。
     const operation = (await this.#send(`/assets/${encodeURIComponent(request.assetId)}`, {

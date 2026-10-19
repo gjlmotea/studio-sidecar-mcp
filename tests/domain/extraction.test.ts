@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeSegment } from '../../src/composition.js';
 import {
   DEFAULT_CHUNK_BYTES,
+  EXTRACTED_BY,
   ExtractionError,
   fileNameFor,
   MAX_PAYLOAD_CHARS,
   parseScriptStream,
+  planScriptTargets,
   planSlices,
+  sanitizeSegment,
+  scriptFilesInManifest,
   SENTINEL,
   TRUNCATION_MARKER,
   unwrapChunk,
@@ -165,5 +168,51 @@ describe('sanitizeSegment', () => {
   it('去掉 Windows 不允許的結尾點與空白', () => {
     expect(sanitizeSegment('name.')).toBe('name');
     expect(sanitizeSegment('name ')).toBe('name');
+  });
+
+  it('🔴 Windows 保留裝置名補 _：不分大小寫，帶副檔名也算', () => {
+    // CON.server.luau 在 Windows 上開的是主控台，NUL.luau 寫進去的內容直接消失而且不報錯。
+    expect(sanitizeSegment('CON')).toBe('CON_');
+    expect(sanitizeSegment('nul.luau')).toBe('nul_.luau');
+    expect(sanitizeSegment('Com1.server.luau')).toBe('Com1_.server.luau');
+    expect(sanitizeSegment('LPT¹.client.luau')).toBe('LPT¹_.client.luau');
+    expect(sanitizeSegment('CONIN$')).toBe('CONIN$_');
+    expect(sanitizeSegment('AUX .luau')).toBe('AUX _.luau');
+    // 結尾的點先去掉，剩下的才是要比的名字。
+    expect(sanitizeSegment('PRN.')).toBe('PRN_');
+  });
+
+  it('只有第一個點之前整段等於保留名才算，結果再清一次也不變', () => {
+    expect(sanitizeSegment('CONSOLE.luau')).toBe('CONSOLE.luau');
+    expect(sanitizeSegment('COM10')).toBe('COM10');
+    expect(sanitizeSegment('MyNul.luau')).toBe('MyNul.luau');
+    expect(sanitizeSegment('Init.CON.luau')).toBe('Init.CON.luau');
+    expect(sanitizeSegment(sanitizeSegment('CON.luau'))).toBe('CON_.luau');
+  });
+});
+
+describe('planScriptTargets 與 Windows 保留名', () => {
+  it('🔴 保留名的資料夾與檔名都避開，跟本來就叫 CON_ 的腳本也不撞', () => {
+    const targets = planScriptTargets([
+      { path: 'ServerScriptService/CON', className: 'Script' },
+      { path: 'ServerScriptService/CON_', className: 'Script' },
+      { path: 'ReplicatedStorage/nul/Init', className: 'ModuleScript' },
+    ]);
+    expect(targets.map((target) => target.path)).toEqual([
+      'src/ServerScriptService/CON_.server.luau',
+      'src/ServerScriptService/CON_~2.server.luau',
+      'src/ReplicatedStorage/nul_/Init.luau',
+    ]);
+  });
+
+  it('0.1.0 在 macOS 寫出的保留名檔案仍認得是本工具寫的，重跑時才刪得掉', () => {
+    const manifest = JSON.stringify({
+      extractedBy: EXTRACTED_BY,
+      scripts: [{ file: 'src/ServerScriptService/CON.server.luau' }, { file: 'src/ReplicatedStorage/nul/Init.luau' }],
+    });
+    expect(scriptFilesInManifest(manifest)).toEqual([
+      'src/ServerScriptService/CON.server.luau',
+      'src/ReplicatedStorage/nul/Init.luau',
+    ]);
   });
 });

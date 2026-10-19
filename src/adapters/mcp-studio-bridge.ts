@@ -81,7 +81,10 @@ export type BridgeClient = {
 export type BridgeConnector = () => { readonly client: BridgeClient; readonly ready: Promise<void> };
 
 /** 正式執行時的連線方式：把 StudioMCP 當子行程啟動，以 MCP client 身分連上。 */
-function stdioConnector(override: { command: string; args: readonly string[] } | undefined): BridgeConnector {
+function stdioConnector(
+  override: { command: string; args: readonly string[] } | undefined,
+  version: string,
+): BridgeConnector {
   return () => {
     const launch = override ?? resolveBridgeCommand();
     if (launch === undefined) {
@@ -96,7 +99,7 @@ function stdioConnector(override: { command: string; args: readonly string[] } |
       stderr: 'pipe',
       env: getDefaultEnvironment(),
     });
-    const client = new Client({ name: 'roblox-mcp-bridge', version: '0.1.0' });
+    const client = new Client({ name: 'studio-sidecar-bridge', version });
     return { client, ready: client.connect(transport) };
   };
 }
@@ -131,9 +134,12 @@ export class McpStudioBridge implements StudioBridge {
     readonly readyTimeoutMs?: number;
     /** 測試用；正式執行時啟動 StudioMCP 子行程。 */
     readonly connect?: BridgeConnector;
+    /** 對 StudioMCP 自報的 client 版本，跟著本 server 的版本走。 */
+    readonly version?: string;
   } = {}) {
     this.#connect = options.connect ?? stdioConnector(
       options.command === undefined ? undefined : { command: options.command, args: options.args ?? [] },
+      options.version ?? '0.0.0',
     );
     this.#timeoutMs = options.timeoutMs ?? 180_000;
     this.#readyTimeoutMs = options.readyTimeoutMs ?? 20_000;

@@ -8,12 +8,12 @@
     "url": "https://github.com/gjlmotea/studio-sidecar-mcp",
     "source": "github"
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@gjlmotea/studio-sidecar-mcp",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "transport": {
         "type": "stdio"
       },

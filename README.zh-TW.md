@@ -164,7 +164,7 @@ claude mcp add studio-sidecar --scope user -- "$(which node)" "$PWD/dist/index.j
 | `ROBLOX_UPLOAD_ROOT` | **上傳可以讀取的資料夾**。可以有多個，以平台的路徑分隔符連接：Windows 用 `;`（`C:\assets\models;D:\decals`），macOS 用 `:`（`/Users/you/models:/Volumes/art/decals`）。**未設定時所有上傳一律拒絕** |
 | `ROBLOX_STUDIO_PATH` | Studio 執行檔；未設定時自動從目前的安裝解析 |
 
-`ROBLOX_UPLOAD_ROOT` 是刻意設下的護欄：上傳會把本機檔案送到外部服務，對 Model 來說還無法撤回，所以不讓 MCP client 任意指定檔案路徑。
+`ROBLOX_UPLOAD_ROOT` 是刻意設下的護欄：上傳會把本機檔案送到外部服務，對 Model 來說還無法撤回，所以不讓 MCP client 任意指定檔案路徑。檔案與允許的資料夾都先用 `realpath` 解析再比對，所以允許資料夾裡的 symlink 不能把上傳導到別處。檔案只打開一次，透過這個打開的 handle 再確認一次（仍在允許的資料夾內、仍是同一個檔案），送出去的位元組也從這個 handle 讀，所以檢查之後才把路徑換掉不會有任何作用。硬連結超過一個的檔案一律拒絕：允許資料夾裡的硬連結可以就是同一個磁碟上任何地方的檔案；請改傳一份複本。
 
 ## 內建 server 沒告訴你的事
 
@@ -184,9 +184,13 @@ claude mcp add studio-sidecar --scope user -- "$(which node)" "$PWD/dist/index.j
 2. UTF-8 安全的切點由 Lua 決定並回報，呼叫端從那裡接著讀，兩邊從不各自計算邊界。
 3. 逐檔校驗位元組數（用 `Buffer.byteLength`，不是 `String.length`）。任何一檔對不上就中止整次抽取，因為局部正確的快照看起來像成功。
 
-每次呼叫把資料暫存在自己的 key 底下：`shared.RBXEXTRACT_<32 位十六進位>`（只在 Lua VM 記憶體裡，不進 DataModel 也不進 `.rbxl`），用完就清掉，所以重疊的呼叫不會讀到彼此的資料。實例名稱幾乎可以是任何字串，包括 `..` 與路徑分隔符，所以每段路徑都會先清理，寫入前也會確認最終路徑落在輸出資料夾內。
+每次呼叫把資料暫存在自己的 key 底下：`shared.RBXEXTRACT_<32 位十六進位>`（只在 Lua VM 記憶體裡，不進 DataModel 也不進 `.rbxl`），用完就清掉，所以重疊的呼叫不會讀到彼此的資料。清不掉時，下一次碰到同一個 Studio 的呼叫會再清一次，總共最多試三次。每把 key 也記著最後一次使用的時間，每建立一把新的 key 之前，會先清掉閒置超過 15 分鐘的 key，所以釋放失敗、關機或當掉時留下的 key，會在下一次呼叫那個 Studio 時消失。關機途中 server 絕不為了清理而重新連上 Studio。
 
-檔案一律獨佔建立，從不覆蓋任何東西。名字已經被占用時（包括檔案系統視為同名的名字，例如不分大小寫的磁碟上的 `Σ`、`ς` 與 `σ`），該腳本改用下一個 `~n` 後綴，`scene/scripts.json` 記下實際寫入的路徑。重跑到同一個資料夾時，先刪掉該資料夾上一次 `scene/scripts.json` 列出的檔案，其他一律不動；`scene/` 底下的檔案不是 Studio Sidecar 寫的資料夾會被拒絕。
+實例名稱幾乎可以是任何字串，包括 `..`、路徑分隔符，以及 `CON`、`NUL` 這類 Windows 裝置名，所以每段路徑都會先清理。裝置名在每個平台上都會補一個 `_`（`CON` 變成 `CON_.server.luau`），在 macOS 抽出的快照搬到 Windows 也打得開；寫入前也會確認最終路徑落在輸出資料夾內。
+
+整份新快照先寫進抽取在輸出資料夾裡新建的資料夾（`.studio-sidecar-staging-<隨機字串>`）。所有檔案都到齊之後才開始切換：上一次快照的檔案先移到一旁，新檔以硬連結放到正式位置，名字已被占用時硬連結會失敗（不支援硬連結的檔案系統改用獨佔建立）。切換途中任何一步失敗，就收掉新檔、把上一次的快照搬回原位，所以失敗的抽取會讓上一次的快照維持原樣。寫到同一個資料夾的抽取依序進行。中途被強制結束的抽取可能留下 `.studio-sidecar-staging-*` 資料夾，裡面只有快照檔，可以直接刪掉。
+
+從不覆蓋任何東西。名字已經被占用時（包括檔案系統視為同名的名字，例如不分大小寫的磁碟上的 `Σ`、`ς` 與 `σ`），該腳本改用下一個 `~n` 後綴，`scene/scripts.json` 記下實際寫入的路徑。重跑到同一個資料夾時，只換掉該資料夾上一次 `scene/scripts.json` 列出的檔案；`scene/` 底下的檔案不是 Studio Sidecar 寫的資料夾會被拒絕。那些檔案之中若有被做成硬連結的，拿掉的只是這個名字，另一個名字底下的內容維持原樣。
 
 **Studio 橋接必須和 server 活得一樣久。** 每次呼叫後就關閉它，會讓第一次呼叫成功、之後每次都失敗，錯誤訊息是 "Unable to reach Roblox Studio right now"，聽起來像 Studio 沒開。其實不是：關閉會殺掉 stub，下一次呼叫就和 broker 搶時間。冷啟動時，新的 stub 還沒連上 broker 之前也會出現同一句訊息，所以橋接只針對這一句訊息重試列出 Studio 的呼叫，最多 20 秒；每次重試前的等待比上一次多 250 毫秒，最長 1.5 秒。server 開始關機後，橋接拒絕任何新連線，所以那時還在收尾的呼叫不會再生出一隻新的 stub。
 
@@ -210,8 +214,8 @@ claude mcp add studio-sidecar --scope user -- "$(which node)" "$PWD/dist/index.j
 - **`roblox_luau_safe` 不是執行任意程式碼的新途徑。** `execute_luau` 本來就在 client 手上；這個工具只是在同一個入口前加上強制的 PlaceId 守衛、包住整段程式的單一 `pcall` 與分塊結果。`pcall` 會接住執行期錯誤，把它變成可讀的回傳值；錯誤之後的程式不會執行，錯誤之前做的修改也不會復原。它不是沙箱。
 - **不逆向 broker 在 13469 上的私有協定。** 以一般 MCP client 的身分和 `StudioMCP` 溝通，就沒有這個必要。
 - **不提供「從物品欄移除」。** 那要透過 `inventory.roblox.com`，並帶登入後的 session cookie 與 CSRF token，Open Cloud API 金鑰做不到。
-- **已知限制：輸出路徑上的資料夾可能在檢查與檔案操作之間被換掉。** 寫入檔案、或刪掉上一次抽取的檔案之前，每一層資料夾都會先用 `realpath` 解析並確認落在輸出資料夾內；但同一台機器上的其他程式可以在這之間把某個資料夾換成 symlink（time-of-check/time-of-use）。最後那個檔案以 `O_EXCL` 建立，所以那個名字上已經存在的檔案或 symlink 絕不會被打開；平台有 `O_NOFOLLOW` 時也會加上，而 Windows（libuv）不支援它。
-- **已知限制：buffer 釋放失敗時，那把 key 會留下來。** 釋放 Luau buffer 失敗，或因為 server 正在關機而跳過時，那次呼叫的 `shared.RBXEXTRACT_…` 會留在 Studio 的 `shared` 表裡，沒有重試，也沒有過期。
+- **已知限制：輸出資料夾裡既有的資料夾可能在切換途中被換掉。** 檔案寫在新建的暫存資料夾裡，但放到正式位置時，仍是照路徑走輸出資料夾裡既有的子資料夾。每一層都先用 `realpath` 解析並確認落在輸出資料夾內；同一台機器上的其他程式仍可以在檢查與搬移之間把某個資料夾換成 symlink（time-of-check/time-of-use）。搬移只會建立新的名字，最壞的情況是輸出資料夾外多出一個新檔，外面的東西不會被覆蓋或刪除。
+- **已知限制：沒釋放的 buffer 會留到下一次呼叫。** 釋放不掉的 Luau buffer 會留在 Studio 的 `shared` 表裡，直到之後有呼叫碰到同一個 Studio（閒置清理還要等它閒置滿 15 分鐘），或 Studio 關閉為止。
 
 ## 開發
 

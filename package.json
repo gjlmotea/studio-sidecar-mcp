@@ -1,6 +1,6 @@
 {
   "name": "@gjlmotea/studio-sidecar-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Studio Sidecar: companion MCP server for Roblox Studio's built-in MCP (StudioMCP). Opens places, manages StudioMCP broker and stub processes, guards writes by PlaceId, runs Luau past the 100k output limit, and uploads, updates or archives assets through Roblox Open Cloud. No Studio plugin.",
   "keywords": [

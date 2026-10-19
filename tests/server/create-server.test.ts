@@ -16,6 +16,13 @@ async function connect(): Promise<Client> {
   return client;
 }
 
+describe('serverInfo', () => {
+  it('握手回報的是產品名，不是舊的 roblox-mcp', async () => {
+    const client = await connect();
+    expect(client.getServerVersion()).toMatchObject({ name: 'studio-sidecar-mcp', title: 'Studio Sidecar' });
+  });
+});
+
 describe('server instructions', () => {
   it('照實描述 Luau 的錯誤處理：錯誤之後的程式不會執行，也不回復先前的修改', async () => {
     const client = await connect();
